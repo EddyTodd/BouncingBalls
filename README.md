@@ -94,7 +94,7 @@ $$n = v_{x_{a-b}} * v_{x_{a-b}} + v_{y_{a-b}} * v_{y_{a-b}}$$
 
 $$m = 2 * (r_{a-b} * (v_{x_{a-b}} + v_{y_{a-b}}) + x_{a-b} * v_{x_{a-b}} + y_{a-b} * v_{y_{a-b}})$$
 
-$$t = \frac{- m -\sqrt{m ^ 2 - 4 * n * (r_{a-b} ^ 2 - 4 * r_{a} * r_{b} + 2 * r_{a-b} * (x_{a-b} + y_{a-b}) + x_{a-b} ^ 2 +
+$$t = \frac{- m  \pm \sqrt{m ^ 2 - 4 * n * (r_{a-b} ^ 2 - 4 * r_{a} * r_{b} + 2 * r_{a-b} * (x_{a-b} + y_{a-b}) + x_{a-b} ^ 2 +
 y_{a-b} ^ 2)}}{2 * n}$$
 
 When the discriminant of the equation is negative, it means that the balls do not have the direction and/or speed
