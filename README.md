@@ -74,26 +74,23 @@ $$r_{a}+r_{b} = \sqrt{((x_{a}+r_{a}+t\cdot v_{x_{a}}) - (x_{b}+r_{b}+t\cdot v_{x
 
 Now we need to solve for $t$:
 
-$$t =
-\frac{-\sqrt((2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}}
-
-- v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))) ^ 2 - 4 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_
-  {b}}) ^ 2) * ((r_{a} - r_{b}) ^ 2 - 4 * r_{a} * r_{b} + 2 * (r_{a} - r_{b}) * ((x_{a} - x_{b}) + (y_{a} - y_{b})) + (
-  x_
-  {a} - x_{b}) ^ 2 + (y_{a} - y_{b}) ^ 2)) - (2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}}))
-
-+ (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}})))}
-  {2 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2)}$$
+$$t = \frac{-\sqrt((2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))) ^ 2 - 4 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2) * ((r_{a} - r_{b}) ^ 2 - 4 * r_{a} * r_{b} + 2 * (r_{a} - r_{b}) * ((x_{a} - x_{b}) + (y_{a} - y_{b})) + (x_{a} - x_{b}) ^ 2 + (y_{a} - y_{b}) ^ 2)) - (2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}})))}{2 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2)}$$
 
 I know this looks scary, but we can take advantage of the fact that a lot of operations are repeated multiple times and
 simplify it as follows:
 
 $$r_{a-b} = r_{a} - r_{b}$$
+
 $$v_{x_{a-b}} = v_{x_{a}} - v_{x_{b}}$$
+
 $$v_{y_{a-b}} = v_{y_{a}} - v_{y_{b}}$$
+
 $$x_{a-b} = x_{a} - x_{b}$$
+
 $$y_{a-b} = y_{a} - y_{b}$$
+
 $$n = v_{x_{a-b}} * v_{x_{a-b}} + v_{y_{a-b}} * v_{y_{a-b}}$$
+
 $$m = 2 * (r_{a-b} * (v_{x_{a-b}} + v_{y_{a-b}}) + x_{a-b} * v_{x_{a-b}} + y_{a-b} * v_{y_{a-b}})$$
 
 $$t = \frac{-\sqrt(m ^ 2 - 4 * n * (r_{a-b} ^ 2 - 4 * r_{a} * r_{b} + 2 * r_{a-b} * (x_{a-b} + y_{a-b}) + x_{a-b} ^ 2 +
