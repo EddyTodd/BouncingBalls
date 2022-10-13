@@ -74,7 +74,8 @@ $$r_{a}+r_{b} = \sqrt{((x_{a}+r_{a}+t\cdot v_{x_{a}}) - (x_{b}+r_{b}+t\cdot v_{x
 
 Now we need to solve for $t$:
 
-$$t = \frac{-\sqrt((2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))) ^ 2 - 4 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2) * ((r_{a} - r_{b}) ^ 2 - 4 * r_{a} * r_{b} + 2 * (r_{a} - r_{b}) * ((x_{a} - x_{b}) + (y_{a} - y_{b})) + (x_{a} - x_{b}) ^ 2 + (y_{a} - y_{b}) ^ 2)) - (2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}})))}{2 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2)}$$
+$$t =
+\frac{-\sqrt((2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))) ^ 2 - 4 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2) * ((r_{a} - r_{b}) ^ 2 - 4 * r_{a} * r_{b} + 2 * (r_{a} - r_{b}) * ((x_{a} - x_{b}) + (y_{a} - y_{b})) + (x_{a} - x_{b}) ^ 2 + (y_{a} - y_{b}) ^ 2)) - (2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}})))}{2 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2)}$$
 
 I know this looks scary, but we can take advantage of the fact that a lot of operations are repeated multiple times and
 simplify it as follows:
@@ -93,8 +94,8 @@ $$n = v_{x_{a-b}} * v_{x_{a-b}} + v_{y_{a-b}} * v_{y_{a-b}}$$
 
 $$m = 2 * (r_{a-b} * (v_{x_{a-b}} + v_{y_{a-b}}) + x_{a-b} * v_{x_{a-b}} + y_{a-b} * v_{y_{a-b}})$$
 
-$$t = \frac{-\sqrt(m ^ 2 - 4 * n * (r_{a-b} ^ 2 - 4 * r_{a} * r_{b} + 2 * r_{a-b} * (x_{a-b} + y_{a-b}) + x_{a-b} ^ 2 +
-y_{a-b} ^ 2)) - m}{2 * n}$$
+$$t = \frac{-\sqrt{m ^ 2 - 4 * n * (r_{a-b} ^ 2 - 4 * r_{a} * r_{b} + 2 * r_{a-b} * (x_{a-b} + y_{a-b}) + x_{a-b} ^ 2 +
+y_{a-b} ^ 2)} - m}{2 * n}$$
 
 When the discriminant of the equation is negative, it means that the balls do not have the direction and/or speed
 to make contact at some point, which means that we do not have to make another check between these 2 balls until at
