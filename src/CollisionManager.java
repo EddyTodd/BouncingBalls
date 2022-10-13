@@ -20,7 +20,6 @@ public class CollisionManager {
         for (Ball b : balls)
             collisions.put(b, new ArrayList<>(balls.length));
 
-
         for (int i = 0; i < balls.length - 1; i++) {
             for (int j = i + 1; j < balls.length; j++) {
                 Collision c = new BallCollision(balls[i], balls[j]);
