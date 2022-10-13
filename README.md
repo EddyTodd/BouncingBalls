@@ -60,22 +60,13 @@ what we do is calculate the time of impact (TOI). We update the time by one inte
 Once that time has arrived, we perform the necessary computations to resolve the collision.
 
 To find the TOI we need to represent the distance between the two balls with a formula and find the point where the
-distance between them is equal to the sum of the radii.
+distance between them is equal to the sum of the radii. This is expressed in the following formula:
 
-The distance between 2 balls at any given time $t$ can be calculated with the following formula:
-
-$$\sqrt{((x_{a}+r_{a}+t\cdot v_{x_{a}}) - (x_{b}+r_{b}+t\cdot v_{x_{b}}))^2+((y_{a}+r_{a}+t\cdot v_{y_{a}}) - (y_{b}+r_
-{b}+t\cdot v_{y_{b}}))^2}$$
-
-To find the time we need to make this equal to the sum of the radii:
-
-$$r_{a}+r_{b} = \sqrt{((x_{a}+r_{a}+t\cdot v_{x_{a}}) - (x_{b}+r_{b}+t\cdot v_{x_{b}}))^2+((y_{a}+r_{a}+t\cdot v_{y_
-{a}}) - (y_{b}+r_{b}+t\cdot v_{y_{b}}))^2}$$
+$$r_{a}+r_{b} = \sqrt{((x_{a}+r_{a}+t * v_{x_{a}}) - (x_{b}+r_{b}+t* v_{x_{b}}))^2+((y_{a}+r_{a}+t* v_{y_{a}}) - (y_{b}+r_{b}+t* v_{y_{b}}))^2}$$
 
 Now we need to solve for $t$:
 
-$$t =
-\frac{-\sqrt{(2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))) ^ 2 - 4 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2) * ((r_{a} - r_{b}) ^ 2 - 4 * r_{a} * r_{b} + 2 * (r_{a} - r_{b}) * ((x_{a} - x_{b}) + (y_{a} - y_{b})) + (x_{a} - x_{b}) ^ 2 + (y_{a} - y_{b}) ^ 2)} - (2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}})))}{2 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2)}$$
+$$t = \frac{- (2 * ((r_{a} - r_{b}) * (v_{x_{a}} - v_{x_{b}} + v_{y_{a}} - v_{y_{b}}) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))-\sqrt{(2 * ((r_{a} - r_{b}) * ((v_{x_{a}} - v_{x_{b}}) + (v_{y_{a}} - v_{y_{b}})) + (x_{a} - x_{b}) * (v_{x_{a}} - v_{x_{b}}) + (y_{a} - y_{b}) * (v_{y_{a}} - v_{y_{b}}))) ^ 2 - 4 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2) * ((r_{a} - r_{b}) ^ 2 - 4 * r_{a} * r_{b} + 2 * (r_{a} - r_{b}) * (x_{a} - x_{b} + y_{a} - y_{b}) + (x_{a} - x_{b}) ^ 2 + (y_{a} - y_{b}) ^ 2)} )}{2 * ((v_{x_{a}} - v_{x_{b}}) ^ 2 + (v_{y_{a}} - v_{y_{b}}) ^ 2)}$$
 
 I know this looks scary, but we can take advantage of the fact that a lot of operations are repeated multiple times and
 simplify it as follows:
