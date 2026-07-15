@@ -1,2 +1,9 @@
 # Project exclude paths
 /out/
+/target/
+/.tools/
+/.idea/
+*.iml
+*.class
+benchmarks/results/*.csv
+benchmarks/results/*.json
