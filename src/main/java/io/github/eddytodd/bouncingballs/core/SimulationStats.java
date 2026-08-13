@@ -18,7 +18,7 @@ public final class SimulationStats {
     /** CADQ mechanism counts used to interpret coarse timings without adding nested timer overhead. */
     public long cadqQueueValidationChecks, cadqDependencyBatches, cadqFullOwnersVisited,
             cadqLocalOwnersVisited, cadqLocalOwnersModified, cadqRetainedInstalls, cadqRetainedRemovals,
-            cadqRetainedBufferAllocations, cadqInboundSets, cadqInboundClears;
+            cadqInboundSets, cadqInboundClears;
 
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
