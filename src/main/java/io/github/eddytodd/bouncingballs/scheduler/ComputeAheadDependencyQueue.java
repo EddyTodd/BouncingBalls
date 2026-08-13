@@ -19,11 +19,18 @@ import java.util.*;
  * exact pair TOI solve. Local refreshes use their already-valid retained event as the horizon. Set
  * {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve the exact pre-pruning path for research A/B runs.</p>
  *
+ * <p>Canonical pair ownership also bounds local refresh traversal after a trajectory change: an owner can own a pair
+ * involving a changed target only when its slot is lower than that target slot. Owners at or above the highest changed
+ * slot therefore have no possible local pair refresh and are skipped. Set
+ * {@code -Dbouncingballs.cadqCanonicalLocalTraversal=false} to preserve the historical all-owner traversal for causal
+ * research A/B runs.</p>
+ *
  * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
  * avoid the repeated {@link System#nanoTime()} calls used by the diagnostic profiler.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private static final String TEMPORAL_PRUNING_PROPERTY = "bouncingballs.cadqTemporalPruning";
+    private static final String CANONICAL_LOCAL_TRAVERSAL_PROPERTY = "bouncingballs.cadqCanonicalLocalTraversal";
     private static final double TIME_SLACK_MULTIPLIER = 4.0;
 
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
@@ -36,11 +43,13 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     private double now;
     private boolean profile;
     private boolean temporalPruning;
+    private boolean canonicalLocalTraversal;
 
     @Override
     public void rebuild(List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
         profile = Boolean.getBoolean("bouncingballs.cadqProfile");
         temporalPruning = Boolean.parseBoolean(System.getProperty(TEMPORAL_PRUNING_PROPERTY, "true"));
+        canonicalLocalTraversal = Boolean.parseBoolean(System.getProperty(CANONICAL_LOCAL_TRAVERSAL_PROPERTY, "true"));
         bodies = balls.toArray(Ball[]::new);
         Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
 
@@ -310,7 +319,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         if (profile) stats.cadqFullReselectionNanos += System.nanoTime() - fullStart;
 
         long localStart = profile ? System.nanoTime() : 0;
-        for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
+        int localOwnerLimit = canonicalLocalTraversal && !changedSlots.isEmpty()
+                ? changedSlots.length() - 1
+                : bodies.length;
+        for (int ownerSlot = 0; ownerSlot < localOwnerLimit; ownerSlot++) {
             if (!full.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
         }
         if (profile) stats.cadqLocalRefreshNanos += System.nanoTime() - localStart;
