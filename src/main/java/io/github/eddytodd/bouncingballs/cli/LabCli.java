@@ -112,10 +112,13 @@ public final class LabCli {
                         + "\"requestedSeconds\":%.6f,\"simulatedSeconds\":%.12f,"
                         + "\"workloadGenerationNanos\":%d,\"constructionNanos\":%d,\"advanceNanos\":%d,"
                         + "\"totalEngineNanos\":%d,\"resolvedContacts\":%d,\"toiQueries\":%d,"
-                        + "\"candidateChecks\":%d,\"queuePushes\":%d,\"queuePops\":%d,"
+                        + "\"candidateChecks\":%d,\"predictedEventMaterializations\":%d,"
+                        + "\"queuePushes\":%d,\"queuePops\":%d,"
                         + "\"validEvents\":%d,\"staleEvents\":%d,\"stalePercent\":%.4f,"
                         + "\"predictionRecomputations\":%d,\"dependencyInvalidations\":%d,"
-                        + "\"cadqFullReselections\":%d,\"cadqLocalPairRefreshes\":%d,\"maxQueueSize\":%d}",
+                        + "\"cadqFullReselections\":%d,\"cadqLocalPairRefreshes\":%d,"
+                        + "\"cadqTemporalBoundChecks\":%d,\"cadqTemporalPrunes\":%d,"
+                        + "\"cadqTemporalPrunePercent\":%.4f,\"maxQueueSize\":%d}",
                 Instant.now(),
                 scheduler,
                 resolver,
@@ -133,6 +136,7 @@ public final class LabCli {
                 stats.resolvedContacts,
                 stats.toiQueries,
                 stats.candidateChecks,
+                stats.predictedEventMaterializations,
                 stats.queuePushes,
                 stats.queuePops,
                 stats.validEvents,
@@ -142,6 +146,9 @@ public final class LabCli {
                 stats.dependencyInvalidations,
                 stats.cadqFullReselections,
                 stats.cadqLocalPairRefreshes,
+                stats.cadqTemporalBoundChecks,
+                stats.cadqTemporalPrunes,
+                stats.cadqTemporalPrunePercent(),
                 stats.maxQueueSize);
     }
 
