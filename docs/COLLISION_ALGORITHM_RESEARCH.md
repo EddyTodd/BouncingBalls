@@ -29,6 +29,8 @@ The accepted dense implementation then replaced hot hash/object bookkeeping with
 - target slots are retained in parallel primitive arrays;
 - a primitive open-addressed id-to-slot table avoids boxed lookup in queue validation and invalidation.
 
+Advance-phase profiling subsequently showed that the dominant remaining regions were full reselection and local changed-pair refresh. Three micro-optimization hypotheses inside those regions failed the wall-clock acceptance gate. The accepted follow-on therefore attacks exact candidate work directly with a conservative temporal reachability bound.
+
 The public id space does not need to be dense, positive, or input-ordered. Regression coverage explicitly exercises sparse, negative, and unsorted ids.
 
 ## Current CADQ invariant
@@ -38,24 +40,37 @@ For each owner `u`:
 - only canonically owned pairs `u-v` with `u.id < v.id` are considered;
 - all four wall predictions remain owned by `u`;
 - the owner retains the complete set of events tied for its earliest time;
-- reverse dependencies identify owners whose retained sets currently reference each body.
+- reverse dependencies identify owners whose retained sets currently reference each body;
+- once an exact earliest horizon is known, a pair may skip exact TOI only when a conservative reachability bound proves it cannot contact by that horizon, including tie-time slack.
 
 When a set `C` changes trajectory:
 
 1. every body in `C` is fully reselected over the pairs it canonically owns plus its walls;
 2. every owner whose retained set references a body in `C` is fully reselected;
 3. predictions between two unchanged trajectories remain valid;
-4. each remaining owner tests only changed bodies whose pair it canonically owns.
+4. each remaining owner tests only changed bodies whose pair it canonically owns;
+5. full reselection evaluates the four wall TOIs first to establish an exact horizon when possible, then applies temporal reachability before exact pair TOI;
+6. local refresh uses the unchanged owner's already-valid retained event as its exact horizon before testing changed pairs.
 
 Canonical ownership is safe for compute-ahead selection. Suppose owner `u` has an omitted, later prediction against `v`. If `u`'s retained event occurs first, `u` changes and is reselected before the omitted event can occur. If `v` changes first, `u-v` is either invalidated through a retained dependency or tested through the changed-body refresh path. A second endpoint owner is not required merely to preserve the event.
+
+Temporal pruning is also conservative. Over horizon `t`, relative displacement satisfies
+
+`|v t + 0.5 a t^2| <= |v| t + 0.5 |a| t^2`.
+
+Therefore current center separation `|r|` can reach the combined radius `R` only if
+
+`|r| <= R + |v| t + 0.5 |a| t^2`.
+
+The implementation uses L1 norms for speed and acceleration, inflates the reachable distance with `NumericalPolicy` slack, inflates the horizon with tie-time slack, and fails open on non-finite/overflow cases. Rejection therefore means the pair is proved unable to beat or tie the exact retained horizon; acceptance still requires the exact quadratic/quartic TOI calculation.
 
 The tie-set requirement remains essential. A body may have multiple physically distinct contacts at the same earliest time; all of those canonical edges must survive so simultaneous collision islands are not truncated.
 
 ### Work model
 
-With `N` bodies, the initial CADQ pair scan is exactly `N(N-1)/2` ball-ball TOI queries plus `4N` wall queries.
+With `N` bodies, initial CADQ construction deliberately remains the exact `N(N-1)/2` ball-ball scan plus `4N` wall queries. Temporal pruning targets `advance()` so initialization remains a causal control.
 
-For an update with `k` changed bodies and `d` additional reverse-dependency owners, full reselections still cost up to quadratic work in the affected owner set, while local refreshes test only canonically owned changed pairs. Worst-case dependency fan-out can still approach a full rebuild. Dense bookkeeping changes constant factors and allocation/lookup behavior; it does not change that worst-case asymptotic bound.
+For an update with `k` changed bodies and `d` additional reverse-dependency owners, full reselections still have a worst case approaching quadratic work, while local refreshes test only canonically owned changed pairs. Temporal pruning reduces the number of exact pair TOI solves when an existing owner horizon is restrictive enough; it does not improve the formal worst case because an adversarial geometry can make every bound inconclusive.
 
 ## Simultaneous contacts and structural correctness
 
@@ -63,7 +78,7 @@ Events within `NumericalPolicy.sameTime` are advanced together, deduplicated int
 
 The simulator records a deterministic **physical contact-history fingerprint** in addition to counts. The fingerprint is order-sensitive between event batches and order-insensitive inside one simultaneous batch. It is a diagnostic, not a cryptographic proof, but it distinguishes “same collision topology with floating-point drift” from “scheduler missed or reordered a physical contact.”
 
-Regression coverage includes simultaneous three-body contact, scheduler-independent physical event budgeting, canonical pair ownership, directional invalidation, large/high-speed contact-history equivalence, duplicate-body-id rejection, and sparse/non-contiguous id behavior under dense CADQ slots.
+Regression coverage includes simultaneous three-body contact, scheduler-independent physical event budgeting, canonical pair ownership, directional invalidation, large/high-speed contact-history equivalence, duplicate-body-id rejection, sparse/non-contiguous id behavior under dense CADQ slots, velocity/acceleration temporal-bound safety, and an enabled/disabled temporal-pruning mechanism check.
 
 ## Differential validation methodology
 
@@ -99,20 +114,15 @@ Campaigns perform configurable warmups and rotate scheduler execution order acro
 
 Normalizing to GLOBAL inside each run reduces shared hosted-runner/JVM variation, but it does not make different machines identical. Cross-machine replication remains necessary before generalizing a speed claim.
 
-`CadqProfileCli` is a separate diagnostic tool. It inserts opt-in coarse `System.nanoTime()` probes into CADQ queue work, dependency discovery, full reselection, and local refresh. Those probes perturb execution, so profiler timings are used to select hypotheses, **not** to establish speedups. Every performance acceptance decision returns to an uninstrumented `CampaignCli` run.
+`CadqProfileCli` is a separate diagnostic tool. It inserts opt-in coarse `System.nanoTime()` probes into CADQ queue work, dependency discovery, full reselection, and local refresh. Those probes perturb execution, so profiler timings are used to select hypotheses, **not** to establish speedups. Every performance acceptance decision returns to uninstrumented runs.
 
-`maxQueueSize` is a structural memory proxy, not measured allocation or retained heap. `predictedEventMaterializations` is a mechanism counter for finite `CollisionEvent` construction, not a direct heap-allocation measurement.
+The temporal-pruning milestone additionally used an interleaved same-JVM A/B because two separate-process campaigns showed impossible construction shifts despite the feature being inactive during initial construction. The A/B alternated enabled/disabled order every repetition and compared adjacent executions of the same scheduler/workload/seed. This separated the causal advance effect from process-order/JIT noise.
+
+`maxQueueSize` is a structural memory proxy, not measured allocation or retained heap. `predictedEventMaterializations` is a mechanism counter for finite `CollisionEvent` construction, not a direct heap-allocation measurement. `cadqTemporalBoundChecks` and `cadqTemporalPrunes` distinguish cheap broad-phase work from exact pair TOI work.
 
 ## Empirical optimization sequence
 
-The bounded campaign used for the current sequence runs on GitHub-hosted Ubuntu 24.04 with Temurin Java 17 and tests seven randomized workload families, 20/100 balls, three seeds, one warmup, five measured repetitions, and one simulated second: 42 scenarios and **630 measured trials** per campaign.
-
-Accepted variants and all three later experimental candidates had:
-
-- physical correctness failures: **0**;
-- execution failures: **0**;
-- strict numerical-drift warnings: **30**;
-- identical physical histories for those warnings and drift below the explicit ceiling.
+The original bounded campaign uses GitHub-hosted Ubuntu 24.04 with Temurin Java 17 and tests seven randomized workload families, 20/100 balls, three seeds, one warmup, five measured repetitions, and one simulated second: 42 scenarios and **630 measured trials** per campaign. Larger replications state their own populations explicitly.
 
 ### 1. Canonical ownership removed duplicated prediction work
 
@@ -145,7 +155,7 @@ A 20,000-resample matched bootstrap gave approximate 95% factor intervals:
 - construction: `0.884–1.037`;
 - advance: `0.855–0.954`.
 
-Thus the data support a reduction in total and advance penalty for this campaign population; construction is consistent with parity. The dense implementation does **not** make CADQ universally faster than GLOBAL. Its aggregate 100-ball total ratio remains about `1.059`, and advance remains about `1.223`.
+Thus the data support a reduction in total and advance penalty for this campaign population; construction is consistent with parity. The dense implementation did not yet make CADQ universally faster than GLOBAL.
 
 ### 3. Earlier dense micro-variants were rejected
 
@@ -164,11 +174,11 @@ A 105-trial 100-ball diagnostic profile found approximate median phase shares of
 
 The four probes covered roughly 72% of median whole `advance()` time. Full reselection plus local refresh therefore dominated the measured CADQ scheduler regions; queue validation and dependency discovery did not.
 
-Representative medians were about 24 full owners visited, 877 local owners visited, only 4 local owners modified, 128 retained installs, and 7,556 TOI queries. These counts motivated three narrower experiments.
+Representative medians were about 24 full owners visited, 877 local owners visited, only 4 local owners modified, 128 retained installs, and 7,556 TOI queries.
 
 ### 5. Three plausible advance micro-optimizations were falsified
 
-Each candidate was compared with the accepted dense baseline using exact matched observations and the same 20,000-resample bootstrap procedure:
+Each candidate was compared with the accepted dense baseline using exact matched observations and a 20,000-resample bootstrap:
 
 | Experimental change | 100-ball total factor (95% interval) | 100-ball advance factor (95% interval) | Decision |
 |---|---:|---:|---|
@@ -178,29 +188,50 @@ Each candidate was compared with the accepted dense baseline using exact matched
 
 All intervals span `1`. The experiments each improved or removed a real mechanism—array churn, provably useless owner visits, or throwaway event construction—but none demonstrated a reproducible improvement in the target timing metric. The implementations were reverted instead of accumulating complexity that the evidence did not justify.
 
-The raw artifacts remain preserved in completed GitHub Actions runs. Detailed phase counts and the full falsification log are in [`CADQ_ADVANCE_PROFILE.md`](CADQ_ADVANCE_PROFILE.md).
+Detailed phase counts and the full falsification log are in [`CADQ_ADVANCE_PROFILE.md`](CADQ_ADVANCE_PROFILE.md).
 
-## Current conclusion and next hypothesis
+### 6. Conservative temporal pruning reduced exact candidate work
 
-The optimization sequence has now established three useful facts:
+Temporal pruning was first evaluated in a process-level campaign and then replicated with process order reversed. The larger replication used seven workload families, 20/100 balls, five seeds, two warmups, ten measured repetitions, and one simulated second. Enabled and disabled campaigns each produced **2,100 measured scheduler trials** with zero physical correctness failures and zero execution failures.
 
-1. duplicated pair prediction was a real and large CADQ defect;
+At 100 balls:
+
+- median exact TOI queries changed from `7,556` to `6,754` (**-10.6%**);
+- normalized total-engine factor was **0.963** (`0.935–0.991`);
+- normalized advance factor was **0.748** (`0.724–0.772`).
+
+At 20 balls, exact TOI work fell only about 2%, but normalized advance still improved about 5.6% (`0.898–0.996`). Separate-process total/construction numbers were contradictory between process orders despite pruning being disabled during construction, so they were not accepted as causal evidence.
+
+The final same-JVM interleaved A/B used **700 adjacent enabled/disabled CADQ pairs per ball count**, alternating execution order. Every pair had to match physical contact count, batch count, contact-history fingerprint, and bounded final state before timing analysis.
+
+| Ball count | Construction factor | Advance factor | Total factor |
+|---:|---:|---:|---:|
+| 20 | 0.996 (`0.982–1.009`) | **0.918 (`0.897–0.940`)** | **0.967 (`0.953–0.980`)** |
+| 100 | 1.006 (`0.995–1.016`) | **0.733 (`0.721–0.746`)** | **0.905 (`0.895–0.915`)** |
+
+This resolves the construction artifact exactly as the mechanism predicts: initialization is parity, while the advance path improves. At 100 balls, enabled-first and enabled-second advance factors were about `0.737` and `0.730`, respectively.
+
+A 105-trial enabled profile measured a median temporal prune rate of about **49.6%** at 100 balls, with workload medians ranging from roughly 37.7% to 78.5%. Accelerated workloads pruned most aggressively, which is valuable because a rejected accelerated candidate avoids the quartic root-isolation path.
+
+Full proof, per-workload prune rates, all evidence passes, and follow-on hypotheses are in [`CADQ_TEMPORAL_PRUNING.md`](CADQ_TEMPORAL_PRUNING.md).
+
+## Current conclusion and next hypotheses
+
+The optimization sequence has now established four useful facts:
+
+1. duplicate pair prediction was a real and large CADQ defect;
 2. object/hash bookkeeping was a measurable secondary defect, and dense representation improved it;
-3. the remaining gap is **not explained by simple queue validation, owner-loop, retained-buffer, or event-allocation micro-overhead**.
+3. simple queue/owner-loop/allocation micro-overhead did not explain the remaining advance gap;
+4. conservative temporal candidate rejection **did** reduce the dominant exact-selection work and produced a reproducible advance/total improvement in the tested hosted-runner population.
 
-Full reselection and local refresh dominate the profiled scheduler regions because they contain the candidate-selection work itself. The next meaningful experiment should therefore reduce the number or cost of exact candidate TOI calculations while preserving the scheduler's exact earliest-event invariant.
+The next experiments should build on that causal result rather than immediately replacing the scheduler with an unrelated spatial structure. High-value directions are:
 
-A promising next hypothesis is a **conservative temporal lower bound**. For surface gap
-
-`g = |r| - (R_a + R_b)`, relative speed magnitude `|v|`, and relative acceleration magnitude `|a|`, any collision by time `t` must satisfy
-
-`g <= |v| t + 0.5 |a| t^2`.
-
-Solving this scalar inequality yields a lower bound on possible collision time. Once an owner already has an exact best event at time `T`, a candidate whose conservative lower bound is strictly later than `T` cannot beat that event. Its exact quadratic/quartic TOI solve can therefore be skipped without sacrificing correctness. This is a temporal broad-phase test: it can reduce expensive exact root solving while remaining conservative.
+- **cost-aware temporal pruning**, because accelerated quartic candidates benefit far more than some cheap velocity-only candidates;
+- **swept spatial indexing** over the current owner horizon, not a static current-position grid;
+- **larger-N crossover campaigns** at 300/1000+ bodies to locate the CADQ/GLOBAL regime boundary;
+- **allocation/GC profiling** so structural queue-size evidence is not confused with actual memory cost.
 
 A conventional current-position spatial grid is not automatically safe for event-driven future collisions, especially with high velocities or acceleration. Spatial indexing should be introduced only with swept/temporal bounds or another proof that no earlier valid event can be discarded.
-
-The next campaign should first test this lower-bound pruning as an independently selectable mechanism, report exact-TOI calls avoided in addition to wall-clock time, preserve adversarial workloads where the bound rejects little, and retain the existing all-pairs physical-history oracle.
 
 These hosted-runner timings are campaign evidence, not universal performance claims. Cross-machine replication and dedicated statistical benchmarking remain required before publishing general speed conclusions.
 
@@ -208,4 +239,4 @@ These hosted-runner timings are campaign evidence, not universal performance cla
 
 Event-driven hard-sphere scheduling and invalid-event handling are established research areas; CADQ is not claimed novel. Useful references: Gerald Paul, *A Complexity O(1) Priority Queue for Event Driven Molecular Dynamics Simulations* (2007), DOI [10.1016/j.jcp.2006.06.042](https://doi.org/10.1016/j.jcp.2006.06.042); Bannerman et al., *DynamO* (2011), DOI [10.1002/jcc.21915](https://doi.org/10.1002/jcc.21915); and Johnson et al., *Reflections on Simultaneous Impact* ([paper index](https://www.cs.columbia.edu/cg/rosi/)).
 
-The repository does not yet claim a spatial broad phase, temporal-pruning speedup, calendar/bucket queue, adaptive scheduler, JMH/JFR allocation results, cross-machine statistical conclusions, or million-ball scalability. Those should be added only with measured implementations and preserved evidence.
+The repository does not yet claim a swept spatial broad phase, calendar/bucket queue, adaptive scheduler, JMH/JFR allocation results, cross-machine statistical conclusions, or million-ball scalability. Those should be added only with measured implementations and preserved evidence.
