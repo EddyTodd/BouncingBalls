@@ -20,7 +20,7 @@ The profiler separates four non-overlapping scheduler regions inside `advance()`
 - full owner reselection;
 - local changed-pair refresh traversal.
 
-It also records mechanism counters such as queue validation checks, dependency batches, full/local owners visited, local owners modified, retained installs/removals, reverse-dependency mutations, TOI queries, queue operations, and predicted-event materializations.
+It also records mechanism counters such as queue validation checks, dependency batches, full/local owners visited, local owners modified, retained installs/removals, reverse-dependency mutations, TOI queries, queue operations, predicted-event materializations, and temporal broad-phase checks/prunes.
 
 **The phase timings are observer-instrumented diagnostics, not benchmark timings.** `System.nanoTime()` probes perturb the measured code path. Uninstrumented `CampaignCli` runs remain the acceptance gate for performance claims.
 
@@ -116,22 +116,27 @@ Experimental mechanism: evaluate TOI as a primitive `double`, select the earlies
 
 Allocation was deterministically reduced, but the speed evidence remained inconclusive and total time trended worse. The optimization was reverted. The generic `predictedEventMaterializations` mechanism counter remains because it is useful for future experiments.
 
-## Interpretation
+## Interpretation and subsequent validation
 
-These negative results matter. The profiler correctly identified full reselection/local refresh as the dominant *regions*, but simple bookkeeping and allocation reductions inside those regions did not explain the remaining CADQ/GLOBAL gap. Three independently plausible micro-optimizations all preserved physics yet failed the same target-metric acceptance test.
+These negative results mattered. The profiler correctly identified full reselection/local refresh as the dominant *regions*, but simple bookkeeping and allocation reductions inside those regions did not explain the remaining CADQ/GLOBAL gap. Three independently plausible micro-optimizations all preserved physics yet failed the same target-metric acceptance test.
 
-The next optimization should therefore reduce the expensive candidate-selection work itself, not merely the overhead around it.
+That evidence led to a qualitatively different hypothesis: reduce the expensive candidate-selection work itself with a **conservative temporal broad phase**. For current center offset `r`, combined radius `R`, relative speed magnitude `|v|`, and relative acceleration magnitude `|a|`, contact by time `t` requires
 
-A promising next hypothesis is a **conservative temporal broad phase**. For a pair with current surface gap
+`|r| <= R + |v| t + 0.5 |a| t^2`.
 
-`g = |r| - (R_a + R_b)`, relative speed magnitude `|v|`, and relative acceleration magnitude `|a|`, any collision by time `t` must satisfy the conservative closing bound
+The implemented bound uses still-more-conservative L1 velocity/acceleration norms plus numerical and tie-time slack. Once an owner has an exact best event at time `T`, a pair proven unable to reach contact by that horizon skips the exact quadratic/quartic TOI calculation.
 
-`g <= |v| t + 0.5 |a| t^2`.
+Unlike the three micro-optimization candidates above, this hypothesis passed the empirical acceptance gate. A reversed-order process replication retained zero physical correctness failures while reducing 100-ball median exact TOI work by about **10.6%** and improving normalized `advance()` by about **25.2%** (`0.724–0.772` bootstrap factor interval).
 
-Solving this scalar inequality gives a lower bound on possible collision time. Once an owner already has an exact best event at time `T`, any pair whose conservative lower bound is strictly later than `T` (under the centralized numerical policy) cannot beat that retained event, so the exact quadratic/quartic TOI calculation can be skipped safely. This does not yet require a spatial grid and preserves exactness because it only rejects pairs proven unable to collide soon enough.
+A subsequent same-JVM interleaved A/B removed the impossible process-level construction shifts from the causal comparison. Across 700 paired measurements per size:
 
-That hypothesis should be implemented and measured separately. A conventional current-position grid is not automatically safe for future event-driven collisions, especially under high velocity or acceleration; any spatial broad phase must use swept/temporal bounds or otherwise prove that it cannot discard a valid earlier event.
+- 20-ball construction remained at parity (`0.982–1.009`), advance improved about **8.2%** (`0.897–0.940`), and total improved about **3.3%** (`0.953–0.980`);
+- 100-ball construction remained at parity (`0.995–1.016`), advance improved about **26.7%** (`0.721–0.746`), and total improved about **9.5%** (`0.895–0.915`).
+
+The temporal hypothesis is therefore no longer merely the proposed next step; it is the accepted follow-on optimization. See [`CADQ_TEMPORAL_PRUNING.md`](CADQ_TEMPORAL_PRUNING.md) for the conservative proof, mechanism counters, process-order replication, same-JVM A/B design, and next hypotheses.
+
+A conventional current-position grid remains unsafe as an automatic next step for future event-driven collisions, especially under high velocity or acceleration. Any spatial broad phase should use swept/temporal bounds or otherwise prove that it cannot discard a valid earlier event.
 
 ## Evidence policy
 
-The raw hosted-runner JSONL and diagnostic artifacts from this milestone remain attached to their completed GitHub Actions runs rather than being committed as universal benchmark truth. The repository records the experiment shape, mechanism, matched comparison method, and conclusions. Cross-machine replication is still required before making machine-independent performance claims.
+The raw hosted-runner JSONL and diagnostic artifacts from these milestones remain attached to their completed GitHub Actions runs rather than being committed as universal benchmark truth. The repository records the experiment shape, mechanism, matched comparison method, and conclusions. Cross-machine replication is still required before making machine-independent performance claims.
