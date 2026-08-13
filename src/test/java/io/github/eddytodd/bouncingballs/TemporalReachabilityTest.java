@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class TemporalReachabilityTest {
     private static final String PROPERTY = "bouncingballs.cadqTemporalPruning";
+    private static final String SPATIAL_PROPERTY = "bouncingballs.cadqSpatialPruning";
 
     @Test
     void velocityBoundNeverRejectsTheExactCollisionHorizon() {
@@ -71,22 +72,26 @@ class TemporalReachabilityTest {
 
     private static SimulationStats buildOnly(List<Ball> balls, Bounds bounds, boolean enabled) {
         String previous = System.getProperty(PROPERTY);
+        String previousSpatial = System.getProperty(SPATIAL_PROPERTY);
         try {
             System.setProperty(PROPERTY, Boolean.toString(enabled));
+            System.setProperty(SPATIAL_PROPERTY, "false");
             ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
             SimulationStats stats = new SimulationStats();
             queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
             return stats;
         } finally {
-            if (previous == null) System.clearProperty(PROPERTY);
-            else System.setProperty(PROPERTY, previous);
+            restore(PROPERTY, previous);
+            restore(SPATIAL_PROPERTY, previousSpatial);
         }
     }
 
     private static SimulationStats updateOwnerOnce(List<Ball> balls, Bounds bounds, boolean enabled) {
         String previous = System.getProperty(PROPERTY);
+        String previousSpatial = System.getProperty(SPATIAL_PROPERTY);
         try {
             System.setProperty(PROPERTY, Boolean.toString(enabled));
+            System.setProperty(SPATIAL_PROPERTY, "false");
             ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
             SimulationStats stats = new SimulationStats();
             queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
@@ -96,8 +101,8 @@ class TemporalReachabilityTest {
             queue.trajectoriesChanged(Set.of(owner), balls, bounds, NumericalPolicy.DEFAULT, stats);
             return stats;
         } finally {
-            if (previous == null) System.clearProperty(PROPERTY);
-            else System.setProperty(PROPERTY, previous);
+            restore(PROPERTY, previous);
+            restore(SPATIAL_PROPERTY, previousSpatial);
         }
     }
 
@@ -120,5 +125,10 @@ class TemporalReachabilityTest {
             double ax,
             double ay) {
         return new Ball(id, 1, 1, 1, new Vec2(x, y), new Vec2(vx, vy), new Vec2(ax, ay));
+    }
+
+    private static void restore(String key, String value) {
+        if (value == null) System.clearProperty(key);
+        else System.setProperty(key, value);
     }
 }
