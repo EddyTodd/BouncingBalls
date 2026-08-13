@@ -6,11 +6,15 @@ import java.util.*;
 /**
  * Compute-ahead dependency queue (CADQ).
  *
- * <p>Each body owns its complete earliest-time tie set. Reverse links record which owners currently depend on
- * another body. When trajectories change, owners whose retained events became invalid are fully recomputed, while
- * otherwise-unaffected owners only test the changed bodies for newly-earlier or equal-earliest pair events. This
- * preserves the global earliest-event and simultaneous-contact invariants without the previous all-owner/full-
- * reselection safeguard.</p>
+ * <p>Each physical ball-ball pair is owned exactly once by the lower-id body. An owner retains the complete
+ * earliest-time tie set among its canonical pairs and walls. Reverse links record which owners currently depend on
+ * another body's trajectory. When trajectories change, invalidated owners are fully recomputed while otherwise
+ * unaffected owners test only changed bodies for canonically owned newly-earlier/equal events.</p>
+ *
+ * <p>Canonical pair ownership is not merely a duplicate-removal optimization. If a non-retained event owned by
+ * body A is later than A's retained event, A's trajectory must change before that later event can occur, so the
+ * omitted prediction will be recomputed first. This preserves the compute-ahead invariant while evaluating every
+ * unordered pair only once per full selection instead of once from each endpoint.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
@@ -31,7 +35,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         removeOutbound(owner);
         List<CollisionEvent> best = new ArrayList<>();
         for (Ball other : balls) {
-            if (other == owner) continue;
+            if (!ownsPair(owner, other)) continue;
             consider(best, EventPredictions.pair(owner, other, policy, stats, now), policy);
         }
         for (int wall = 0; wall < 4; wall++) {
@@ -47,7 +51,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         List<CollisionEvent> best = current == null ? new ArrayList<>() : new ArrayList<>(current);
         boolean modified = false;
         for (Ball other : changed) {
-            if (other == owner) continue;
+            if (!ownsPair(owner, other)) continue;
             CollisionEvent candidate = EventPredictions.pair(owner, other, policy, stats, now);
             stats.cadqLocalPairRefreshes++;
             if (candidate == null) continue;
@@ -64,6 +68,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             removeOutbound(owner);
             install(owner, best, stats);
         }
+    }
+
+    private static boolean ownsPair(Ball owner, Ball other) {
+        return other != owner && owner.id < other.id;
     }
 
     private static void consider(List<CollisionEvent> best, CollisionEvent candidate, NumericalPolicy policy) {
@@ -159,8 +167,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         // Snapshot before mutations: recompute() rewrites reverse links.
         for (Ball owner : full) recompute(owner, balls, bounds, policy, stats);
 
-        // For an owner whose previous earliest tie set did not depend on a changed body, every old prediction
-        // against unchanged bodies remains valid. Only a changed body can introduce a newly-earlier/equal event.
+        // If an unaffected owner did not retain a dependency on a changed body, all of its predictions against
+        // unchanged bodies remain valid. Only canonically owned pairs with changed bodies can become newly earlier.
         for (Ball owner : balls) {
             if (!full.contains(owner)) refreshAgainstChanged(owner, changed, policy, stats);
         }

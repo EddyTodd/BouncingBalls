@@ -4,92 +4,120 @@
 
 Bodies are circles with independent radius, mass, restitution, position, velocity, and constant acceleration. For relative state `r,v,a`, contact solves `|r + vt + ½at²|² - (R1+R2)² = 0`. This is quartic; velocity-only motion reduces to quadratic. `PolynomialRoots` isolates real roots through derivative partitions and bisection with centralized scale-aware tolerances. This makes the trajectory model exact, but not the IEEE-754 root approximation.
 
-## Scheduling and CADQ
+## Scheduling strategies
 
-All-pairs CCD is the small-system correctness reference. The global heap stores absolute-time events and captures each participating body's generation; invalid events are discarded lazily.
+`ALL_PAIRS_CCD` is the small-system correctness reference. It rebuilds every pair and wall prediction after every trajectory-changing batch.
 
-CADQ is the repository's compute-ahead hypothesis. The first implementation stored one earliest prediction per owner plus reverse dependencies, but after each trajectory change it fully reselected every owner as a correctness safeguard. That version was intentionally not an optimization claim: its adversarial workload showed 92,700 TOI queries, 900 reselections, and an 88.5% stale-pop rate for 100 balls.
+`GLOBAL_EVENT_QUEUE` stores predicted events in one generation-validated heap. Changed bodies add replacement predictions; invalid old entries are discarded lazily. This avoids global rebuilding but can accumulate stale entries and a comparatively large queue.
 
-The current implementation replaces that safeguard with local invalidation while preserving correctness invariants.
+`COMPUTE_AHEAD_DEPENDENCY_QUEUE` (CADQ) is the repository's compute-ahead hypothesis: retain only the currently relevant earliest predictions, track the bodies on which they depend, and recompute only the portion of the prediction graph invalidated by a trajectory change.
 
-### CADQ invariant
+### CADQ evolution
 
-For every owner `u`, CADQ retains the complete set of events tied for the earliest predicted time involving `u`, including walls. The global heap is the union of those retained owner sets. Reverse links map a body `v` to every owner whose retained set contains an event against `v`.
+The first CADQ implementation stored one earliest prediction per body plus reverse dependencies, but fully reselected every body after a trajectory change as a correctness safeguard. Its own adversarial smoke result—92,700 TOI queries, 900 reselections, and 88.5% stale pops for 100 balls—falsified that implementation as an optimization.
 
-After a set `C` of bodies changes trajectory:
+The next version removed the all-owner safeguard. It retained the complete earliest-time tie set per owner, fully recomputed changed/dependent owners, and tested only changed bodies from otherwise unaffected owners. This established local invalidation and correct simultaneous-contact batching, but every unordered ball pair was still evaluated from both endpoints.
 
-1. every body in `C` is fully reselected;
-2. every owner whose retained set referenced a body in `C` is fully reselected;
-3. every remaining owner keeps all predictions against unchanged bodies, because neither side of those trajectories changed;
-4. each remaining owner tests only bodies in `C`; any newly earlier event replaces its retained set, while an equal-earliest event joins the retained tie set.
+The current version adds **canonical pair ownership**. For a ball-ball pair `(a,b)`, exactly one body owns the prediction: the lower-id body. Body ids are therefore required to be unique and `Simulation` enforces that invariant.
 
-This is sufficient because a collision prediction can change only when at least one participating trajectory changes. It avoids the previous `N` complete owner scans while still detecting a changed body that becomes a new earlier collision for an owner that had no reverse dependency on it.
+### Current CADQ invariant
 
-The tie-set requirement is essential. Retaining exactly one event per owner can omit an edge of a simultaneous contact graph when one body has two or more equally early contacts. The scheduler therefore retains all events within `NumericalPolicy.sameTime` of an owner's minimum and returns all globally equal-time retained events in one batch. `Simulation` deduplicates duplicate physical contacts caused by ownership symmetry before island resolution.
+For each owner `u`:
 
-### Work model and falsification criteria
+- only canonically owned pairs `u-v` with `u.id < v.id` are considered;
+- all four wall predictions remain owned by `u`;
+- the owner retains the complete set of events tied for its earliest time;
+- reverse dependencies map each referenced body to owners whose retained sets currently depend on it.
 
-Let `N` be body count, `k=|C|` the changed bodies, and `d` the number of additional owners invalidated through retained reverse dependencies. Ignoring walls, a local update performs approximately `(k+d)N` pair predictions for full reselections plus `(N-k-d)k` local changed-body tests. The old safeguard performed approximately `N²` owner-pair predictions after every batch.
+When a set `C` changes trajectory:
 
-This does **not** imply asymptotic improvement in every workload. If dependency fan-out makes `d≈N`, CADQ degenerates toward a full rebuild. The optimization hypothesis is therefore empirical:
+1. every body in `C` is fully reselected over the pairs it canonically owns plus its walls;
+2. every owner whose retained set references a body in `C` is fully reselected;
+3. predictions between two unchanged trajectories remain valid;
+4. each remaining owner tests only changed bodies whose pair it canonically owns.
 
-- sparse/local collision workloads should produce `cadqFullReselections` far below an all-owner reselection count;
-- `cadqLocalPairRefreshes` should account for most unaffected-owner maintenance work;
-- CADQ must remain state-equivalent to the all-pairs reference within the numerical policy across seeded workloads;
-- adversarial dependency fan-out must be reported rather than hidden, even if it defeats CADQ;
-- wall-clock conclusions require repeated benchmark campaigns; operation counters alone establish mechanism, not speed.
+Canonical ownership is safe for compute-ahead selection. Suppose owner `u` has an omitted, later prediction against `v`. If `u`'s retained event occurs first, `u` changes and is reselected before the omitted event can occur. If `v` changes first, `u-v` is either invalidated through a retained dependency or tested through the changed-body refresh path. No second endpoint owner is required merely to preserve the event.
 
-JSONL reports `cadqFullReselections`, `cadqLocalPairRefreshes`, queue size, TOI queries, stale events, and dependency invalidations so these hypotheses can be tested directly.
+The tie-set requirement remains essential. A body may have multiple physically distinct contacts at the same earliest time; all of those canonical edges must survive so simultaneous collision islands are not truncated.
 
-## Simultaneous contacts
+### Work model
 
-Events within `NumericalPolicy.sameTime` are advanced together, deduplicated, partitioned into ball-sharing islands, then solved deterministically. Sequential is the ordering-sensitive baseline. Iterative uses forward/reverse projected Gauss-Seidel. Direct constructs the coupled normal-impulse matrix and falls back when singular or nonphysical. A zero-time batch guard aborts rather than silently looping.
+With `N` bodies, the initial CADQ pair scan is now exactly `N(N-1)/2` ball-ball TOI queries rather than `N(N-1)`, plus `4N` wall queries.
 
-CADQ has explicit regression coverage for a three-body line in which the middle body has two equally early contacts. The retained owner tie sets must expose both physical contacts in the same scheduler batch. A second regression verifies that a local two-body trajectory change does not mechanically trigger the former all-owner full reselection and that unaffected owners use changed-body refreshes.
+For an update with `k` changed bodies and `d` additional reverse-dependency owners, full reselections still cost up to quadratic work in the affected owner set, while local refreshes test only canonically owned changed pairs. Worst-case dependency fan-out can still approach a full rebuild. The optimization is therefore judged empirically, not by a blanket asymptotic claim.
+
+## Simultaneous contacts and structural correctness
+
+Events within `NumericalPolicy.sameTime` are advanced together, deduplicated into physical ball-pair/wall identities, partitioned into ball-sharing islands, then resolved deterministically. Sequential is the ordering-sensitive baseline. Iterative uses forward/reverse projected Gauss-Seidel. Direct constructs a coupled normal-impulse system and falls back when singular or nonphysical.
+
+The simulator now records a deterministic **physical contact-history fingerprint** in addition to counts. The fingerprint is order-sensitive between event batches and order-insensitive inside one simultaneous batch. It is a diagnostic, not a cryptographic proof, but it distinguishes “same collision topology with floating-point drift” from “scheduler missed or reordered a physical contact.”
+
+Regression coverage includes simultaneous three-body contact, scheduler-independent physical event budgeting, canonical pair ownership, directional invalidation, large/high-speed contact-history equivalence, and duplicate-body-id rejection.
 
 ## Differential validation methodology
 
-Performance evidence is now gated by a differential state oracle rather than by event counts alone.
+For each scenario, `CampaignCli` regenerates the same deterministic initial state for every scheduler. `ALL_PAIRS_CCD` supplies the reference trajectory.
 
-For each scenario, `CampaignCli` regenerates a fresh deterministic initial state for every scheduler invocation and executes `ALL_PAIRS_CCD` as the correctness reference. The final state is canonicalized by ball id and includes simulation time, position, and velocity. `GLOBAL_EVENT_QUEUE` and `COMPUTE_AHEAD_DEPENDENCY_QUEUE` are accepted only when every scalar agrees with the reference under a scale-aware tolerance derived from `NumericalPolicy` and the campaign tolerance multiplier.
+Validation deliberately separates two questions:
 
-A campaign records a failure and exits unsuccessfully if a scheduler throws, fails to reach an equivalent simulation time, produces a non-finite state, changes the body identity set, or exceeds the state tolerance. This makes correctness a prerequisite for interpreting speed or mechanism counters.
+1. **Physical scheduler correctness.** The measured run must have the same resolved-contact count, deduplicated physical-contact count, simultaneous-batch count, and contact-history fingerprint as the reference.
+2. **Numerical reproducibility.** Final simulation time, positions, and velocities are compared at a strict state tolerance. A second, explicitly larger drift ceiling bounds scheduler-dependent floating-point path divergence.
 
-The Maven test suite contains a smaller deterministic matrix across all workload families and multiple seeds. The campaign is intentionally larger and emits the raw evidence artifact.
+A run is accepted only if physical history matches and final state remains inside the drift ceiling. Failure of the tighter state comparison is emitted as `numericalDriftWarning`; it is not silently discarded or mislabeled as a missed collision.
+
+This distinction was introduced empirically. The first 630-trial campaign found 30 strict state mismatches, all confined to 100-ball high-speed/wall-heavy scenarios. GLOBAL and CADQ showed the same small coordinate drift from all-pairs while resolving the same contacts. A targeted regression then verified identical contact counts, batch counts, and contact-history fingerprints in those cases. The campaign now preserves that numerical fact instead of weakening the single tolerance until the warning disappears.
 
 ## Workload validity and provenance
 
-The original randomized workload generator sampled positions independently, which meant dense or clustered cases could begin overlapped and Gaussian samples could theoretically begin outside the box. Such a state confounds collision-search research with zero-time penetration recovery.
+Randomized workloads use deterministic rejection sampling and are validated before simulation: body ids are unique, state values are finite, every body begins inside the bounds, and no pair begins penetrated. Deliberately constructed workloads may start exactly touching when the topology requires it. `NEWTON_CRADLE` expands its domain for large requested counts.
 
-Randomized workloads now use deterministic rejection sampling and are validated before simulation: ids must be unique, state values finite, every body must be inside the bounds, and no pair may begin penetrated. Deliberately constructed workloads may start exactly touching when the topology requires it. `NEWTON_CRADLE` also expands its domain for large requested counts so the generated system remains valid.
-
-This sanitation changes the experiment population. Historical numbers from the earlier generator remain historical observations, but they are not directly interchangeable with new campaign measurements. Exact commit identity and campaign configuration should accompany every published dataset.
+Changing workload generation changes the experiment population. Historical numbers from the older generator remain historical observations and must not be mixed with current campaign measurements without labeling the provenance difference.
 
 ## Timing definition
 
-The previous single-run CLI measured only `Simulation.advance()`. That omits the scheduler's initial event construction, which can be substantial and differs among algorithms. New evidence separates:
+The single-run and campaign tools separate:
 
-- workload generation time, excluded from engine timing;
-- `constructionNanos`, including simulation construction and initial scheduler rebuild;
-- `advanceNanos`, timing only the requested simulation advance;
+- workload generation time where recorded, excluded from scheduler comparisons;
+- `constructionNanos`, including `Simulation` construction and initial scheduler predictions;
+- `advanceNanos`, timing `Simulation.advance(...)`;
 - `totalEngineNanos = constructionNanos + advanceNanos`.
 
-The campaign performs configurable warmups and rotates scheduler execution order across repetitions to reduce fixed-order and JVM warmup bias. These are still whole-program JVM timings, not a substitute for a dedicated JMH/JFR or cross-machine benchmark layer. Small timing differences should therefore be treated cautiously.
+Campaigns perform configurable warmups and rotate scheduler execution order across repetitions. These are whole-program JVM measurements, not JMH microbenchmarks. Small timing differences should be treated cautiously.
 
-`maxQueueSize` is useful as a structural memory proxy, but it is not a heap-allocation measurement. Allocation rate, retained heap, GC behavior, cache effects, and hardware counters require later instrumentation.
+`maxQueueSize` is a structural memory proxy, not measured allocation or retained heap. Allocation rate, GC behavior, cache effects, and hardware counters require later instrumentation or the shared benchmark system.
 
-## Validation and evidence status
+## First post-optimization campaign
 
-The intended test gate now covers velocity TOI, accelerated TOI, elastic head-on conservation across all resolvers, stale-event behavior, CADQ simultaneous tie batching, CADQ local invalidation, deterministic/valid workload construction, large-cradle bounds, and a multi-workload/multi-seed differential scheduler matrix.
+A bounded campaign on a GitHub-hosted Ubuntu 24.04 runner with Temurin Java 17 tested seven randomized workload families, 20 and 100 requested balls, three seeds, one warmup, five measured repetitions, and one simulated second. It produced 42 scenarios and **630 measured trials**.
 
-Historical smoke observations from the first laboratory milestone remain useful only as a pre-optimization baseline: all-pairs sparse 10 balls/1 s performed 85 TOI queries with no contacts; global heap sparse 100 performed 5,865 queries and resolved 3 contacts in 20.6 ms; the original safeguarded CADQ adversarial 100 performed 92,700 queries, 900 reselections, and 88.5% stale pops in 44.6 ms on a local Windows 11 / Microsoft OpenJDK 17 run.
+Validation result after canonical pair ownership:
 
-Those measurements predate both local CADQ invalidation and workload sanitation. They must not be presented as results for the current implementation.
+- physical correctness failures: **0**;
+- execution failures: **0**;
+- strict numerical-drift warnings: **30**;
+- all warnings remained inside the drift ceiling and preserved identical physical contact histories.
 
-No new wall-clock performance result is claimed by this milestone. The execution environment used to prepare it does not provide Maven or outbound GitHub access to obtain a clean local checkout, and the repository's hosted Actions quota may be unavailable. The contribution of this pass is the evidence machinery and correctness gate needed to produce the next trustworthy dataset. Exact campaign procedure and interpretation rules are in [`../benchmarks/README.md`](../benchmarks/README.md).
+The important mechanism result is deterministic: canonical ownership nearly halved CADQ's TOI work. Examples at 100 balls:
+
+| Workload | CADQ TOI | Global TOI | CADQ max queue | Global max queue |
+|---|---:|---:|---:|---:|
+| Accelerated | 6,276 | 6,277 | 103 | 249 |
+| Sparse | 6,173 | 6,174 | 103 | 247 |
+| Dense | 7,789 | 7,410 | 120 | 328 |
+| High velocity | 15,772 | 15,238 | 133 | 372 |
+| Wall dominated | 11,841 | 11,530 | 124 | 329 |
+| Adversarial invalidation | 7,556 | 7,204 | 117 | 297 |
+
+Before canonical ownership, the same campaign shape observed CADQ TOI counts of 12,116 accelerated, 11,914 sparse, 15,435 dense, 31,050 high velocity, 23,293 wall dominated, and 14,726 adversarial. Timing across separate hosted-runner executions is only indicative, but these operation counts directly demonstrate the mechanism change.
+
+Within the final campaign, CADQ remained generally slower than the global heap despite similar TOI work. At 100 balls the median total-engine gap was roughly 2% accelerated, 13% adversarial, 11% clustered, 17% dense, 19% high velocity, 45% sparse, and 12% wall dominated. CADQ simultaneously kept a much smaller global queue and often a lower stale-pop fraction.
+
+**Current conclusion:** collision prediction is no longer the main CADQ deficit. The next hypothesis is data-structure/bookkeeping overhead—hash maps, hash sets, object-heavy retained-event lists, and owner/dependency maintenance. The next CADQ milestone should replace those structures with dense simulation-slot data where possible and re-run the same evidence campaign before introducing a spatial broad phase. This keeps the optimization path causal and measurable.
+
+These hosted-runner timings are campaign evidence, not a universal performance claim. Cross-machine replication and dedicated statistical benchmarking remain required before publishing general speed conclusions.
 
 ## Prior work and limitations
 
 Event-driven hard-sphere scheduling and invalid-event handling are established research areas; CADQ is not claimed novel. Useful references: Gerald Paul, *A Complexity O(1) Priority Queue for Event Driven Molecular Dynamics Simulations* (2007), DOI [10.1016/j.jcp.2006.06.042](https://doi.org/10.1016/j.jcp.2006.06.042); Bannerman et al., *DynamO* (2011), DOI [10.1002/jcc.21915](https://doi.org/10.1002/jcc.21915); and Johnson et al., *Reflections on Simultaneous Impact* ([paper index](https://www.cs.columbia.edu/cg/rosi/)).
 
-This pass intentionally does not yet claim spatial broad phases, bucket calendars, JMH measurements, adaptive switching, property fuzzing, statistically aggregated timing conclusions, or million-ball scalability. Those require measured implementations rather than placeholders. JSONL remains the primary machine-readable dataset format.
+The repository does not yet claim a spatial broad phase, calendar/bucket queue, adaptive scheduler, JMH/JFR allocation results, cross-machine statistical conclusions, or million-ball scalability. Those should be added only with measured implementations and preserved evidence.

@@ -1,47 +1,56 @@
 # Empirical campaign protocol
 
-This directory documents how scheduler claims are tested. Raw result files belong in `benchmarks/results/` and are intentionally ignored by Git so that machine-local measurements are not silently promoted to repository facts.
+This directory documents how scheduler claims are tested. Raw result files belong in `benchmarks/results/` and are intentionally ignored by Git so machine-local measurements are not silently promoted to repository facts.
 
 ## Research questions
 
-The current campaign is designed to answer four separate questions.
+The current campaign keeps five questions separate:
 
-1. **Correctness:** do `GLOBAL_EVENT_QUEUE` and `COMPUTE_AHEAD_DEPENDENCY_QUEUE` end in the same physical state as `ALL_PAIRS_CCD` for the same deterministic initial state?
-2. **Mechanism:** how many TOI queries, queue operations, stale events, CADQ full reselections, and CADQ local pair refreshes does each strategy perform?
-3. **Initialization cost:** how much time is spent constructing the simulation and its initial scheduler state?
-4. **Advance cost:** after initialization, how much wall-clock time is spent advancing the requested simulation interval?
+1. **Physical correctness:** does a scheduler reproduce the same deduplicated physical collision history as the all-pairs reference?
+2. **Numerical reproducibility:** how far can final coordinates drift when schedulers follow the same physical collision history through different floating-point TOI/rebuild paths?
+3. **Mechanism:** how many TOI queries, queue operations, stale entries, CADQ reselections, and local refreshes occur?
+4. **Initialization cost:** how much time is spent constructing the simulation and initial scheduler state?
+5. **Advance cost:** how much wall-clock time is spent advancing the requested interval?
 
-These questions must not be collapsed into one number. Operation counts can demonstrate that an optimization mechanism is behaving as intended, but they are not a substitute for repeated timing measurements. Likewise, a faster run is not evidence of correctness.
+These questions must not be collapsed into one number. A faster run is not evidence of correctness, operation counts are not wall-clock measurements, and bitwise-like coordinate agreement is not the only meaningful definition of collision-scheduler equivalence.
 
-## Correctness oracle
+## Correctness reference
 
-`CampaignCli` creates a fresh workload for every run using the same workload kind, requested ball count, seed, restitution, resolver, duration, and event limit. `ALL_PAIRS_CCD` is executed once as the reference for each scenario. Every measured scheduler run is compared against that reference using canonical body ordering and scale-aware tolerances derived from `NumericalPolicy`.
+`CampaignCli` creates a fresh deterministic workload for every scheduler invocation. `ALL_PAIRS_CCD` supplies the reference trajectory.
 
-A campaign exits unsuccessfully if any measured run throws or if its final simulation time, position, or velocity state differs from the reference beyond the configured tolerance. Differential correctness therefore gates any performance interpretation.
+Each run records a physical contact-history fingerprint. A measured scheduler must match the reference on:
 
-The normal Maven test suite also contains a smaller multi-workload, multi-seed differential matrix. That test is a regression gate; the campaign is the larger evidence generator.
+- resolved-contact count;
+- deduplicated physical-contact count;
+- non-empty simultaneous-contact batch count;
+- order-sensitive contact-history fingerprint, with contact ordering inside one simultaneous batch canonicalized.
+
+The final state is also compared in two bands:
+
+- `stateToleranceMultiplier`: the strict state-equivalence diagnostic;
+- `driftToleranceMultiplier`: a larger, explicit ceiling for scheduler-dependent floating-point path drift.
+
+A run passes only when its physical history is identical and its final state remains inside the drift ceiling. If the physical history matches but the strict state comparison fails, the trial emits `numericalDriftWarning=true`. Warnings remain evidence; they are not converted into successes by hiding the final-state error.
+
+The distinction was motivated by an actual campaign result: high-speed 100-ball runs from both GLOBAL and CADQ produced the same physical contact sequence as all-pairs but accumulated coordinate differences around `1e-8` to `1e-7`. A targeted regression reproduces those cases.
 
 ## Workload validity
 
-Randomized workloads are rejection-sampled so bodies begin finite, inside the domain, and without penetration. This matters because an accidental initial overlap can turn a scheduler comparison into a test of zero-time recovery behavior rather than the intended collision-search mechanism.
+Randomized workloads are rejection-sampled so bodies begin finite, inside the domain, with unique ids and without penetration. Constructed workloads such as `NEWTON_CRADLE` may begin exactly touching because that topology is intentional. The cradle domain expands with requested ball count.
 
-Constructed workloads such as `NEWTON_CRADLE` may begin exactly touching because that contact topology is intentional. The cradle domain expands with requested ball count so large campaigns do not silently place bodies outside the box.
-
-Changing workload generation changes the experiment population. Historical measurements produced before this sanitation pass remain historical baselines and must not be mixed with new campaign results without labeling the workload version difference.
+Changing workload generation changes the experiment population. Historical measurements from older generators must not be mixed with current campaign data without labeling that provenance change.
 
 ## Timing definition
 
 `CampaignCli` creates the deterministic workload before engine timing starts. Each measured campaign run records:
 
-- `constructionNanos`: `Simulation` construction, including the scheduler's initial prediction/rebuild work;
+- `constructionNanos`: `Simulation` construction including initial scheduler prediction/rebuild work;
 - `advanceNanos`: `Simulation.advance(...)` only;
 - `totalEngineNanos`: `constructionNanos + advanceNanos`.
 
-The single-run `LabCli` additionally records `workloadGenerationNanos` so scenario-generation cost can be inspected, but that value is deliberately excluded from scheduler comparisons.
+`LabCli` additionally records workload generation time, but workload generation remains excluded from scheduler comparisons.
 
-The older single-run CLI timed only `advance()`. That field was insufficient for fair comparisons because algorithms can move meaningful work into initialization. New evidence must use the split timing fields.
-
-`CampaignCli` performs configurable warmups and then interleaves scheduler order across repetitions to reduce fixed-order/JIT bias. These are still whole-program JVM measurements, not JMH microbenchmarks. Claims about small timing differences should therefore wait for a later dedicated benchmarking layer.
+Campaigns perform configurable warmups and rotate scheduler execution order across repetitions to reduce fixed-order/JIT bias. These are whole-program JVM timings, not JMH microbenchmarks. Do not interpret small timing differences as universal results.
 
 ## Running a campaign
 
@@ -63,19 +72,57 @@ mvn exec:java \
   -Dexec.args="--workloads ALL --balls 10,100 --seeds 5 --warmups 2 --repetitions 10 --duration 1 --out benchmarks/results/cadq-validation.jsonl"
 ```
 
-The output begins with an `environment` record containing JVM/OS/CPU-count/heap metadata and the campaign configuration, followed by reference and measured trial records and a final summary record.
+The Maven exec entry point is deliberately property-backed in `pom.xml`; `-Dexec.mainClass=...` must select the requested runner rather than silently launching `LabCli`.
+
+The output begins with an `environment` record containing JVM/OS/CPU-count/heap metadata and campaign configuration, followed by reference/trial records and a final summary.
+
+## Current bounded campaign result
+
+The first post-optimization hosted campaign used:
+
+- Ubuntu 24.04 GitHub-hosted runner;
+- Temurin Java 17;
+- seven randomized workload families;
+- 20 and 100 balls;
+- three seeds;
+- one warmup;
+- five measured repetitions;
+- one simulated second.
+
+It produced 42 scenarios and 630 measured trials. After canonical CADQ pair ownership:
+
+- physical correctness failures: `0`;
+- execution failures: `0`;
+- strict numerical-drift warnings: `30`;
+- campaign passed: `true`.
+
+Representative deterministic 100-ball operation counts:
+
+| Workload | CADQ TOI | Global TOI | CADQ max queue | Global max queue |
+|---|---:|---:|---:|---:|
+| Accelerated | 6,276 | 6,277 | 103 | 249 |
+| Sparse | 6,173 | 6,174 | 103 | 247 |
+| Dense | 7,789 | 7,410 | 120 | 328 |
+| High velocity | 15,772 | 15,238 | 133 | 372 |
+| Wall dominated | 11,841 | 11,530 | 124 | 329 |
+| Adversarial invalidation | 7,556 | 7,204 | 117 | 297 |
+
+These counts show that canonical ownership eliminated the earlier near-2x CADQ pair-prediction duplication. The final campaign still found CADQ generally slower than GLOBAL on this runner despite similar TOI work, which shifts the next hypothesis toward bookkeeping/data-structure overhead rather than collision mathematics.
+
+The raw campaign was preserved as a GitHub Actions artifact during the research branch run. It is intentionally not checked into the repository as a permanent benchmark conclusion.
 
 ## Interpretation rules
 
-Do not publish a scheduler as faster because of one seed, one repetition, or one machine. Before making a performance claim:
+Before making a performance claim:
 
-- require zero differential correctness failures;
+- require zero physical correctness failures;
 - preserve raw JSONL;
+- report numerical-drift warnings rather than suppressing them;
 - report workload, ball count, seed set, resolver, restitution, duration, event limit, commit, JVM, OS, and hardware context;
 - analyze construction, advance, and total engine time separately;
-- report operation counters alongside timing so the mechanism can be inspected;
+- report operation counters alongside timing;
 - include adversarial workloads even when they make the proposed optimization lose;
 - treat `maxQueueSize` as a structural memory proxy only, not measured heap allocation;
 - repeat important conclusions on another machine/JVM before describing them as general.
 
-Actual allocation/heap profiling, statistically rigorous aggregation, cross-machine campaign orchestration, and JMH/JFR integration belong to later milestones or the shared benchmark infrastructure. This repository should preserve the collision-specific hypotheses, correctness oracle, and raw mechanism counters even if generic benchmarking machinery is later moved elsewhere.
+Allocation/heap profiling, statistically rigorous aggregation, cross-machine campaign orchestration, JMH/JFR integration, and hardware counters belong to later milestones or the shared benchmark infrastructure. This repository should preserve the collision-specific hypotheses, correctness semantics, and mechanism counters even if generic benchmarking machinery moves elsewhere.
