@@ -9,6 +9,22 @@ jobs:
         with: { distribution: temurin, java-version: '17', cache: maven }
       - run: mvn -B test
       - run: python3 -m py_compile benchmarks/compare_campaigns.py
-      - name: Probe local refresh traversal
+      - name: Run matched local-refresh A/B
         if: github.ref == 'refs/heads/agent/cadq-bounded-local-refresh'
-        run: mvn -q -Dstyle.color=never exec:java -Dexec.mainClass=io.github.eddytodd.bouncingballs.research.CadqLocalTraversalProbeCli
+        shell: bash
+        run: |
+          set -euo pipefail
+          workloads='SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,DIFFERENTIAL_ACCELERATION,ADVERSARIAL_INVALIDATION'
+          args="--workloads ${workloads} --balls 100,300 --seeds 3 --warmups 1 --repetitions 4 --duration 0.25 --events 100000 --out"
+          mvn -q exec:java -Dbouncingballs.commit="${GITHUB_SHA}" -Dbouncingballs.cadqCanonicalLocalTraversal=false -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli -Dexec.args="${args} local-baseline.jsonl --overwrite"
+          mvn -q exec:java -Dbouncingballs.commit="${GITHUB_SHA}" -Dbouncingballs.cadqCanonicalLocalTraversal=true -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli -Dexec.args="${args} local-candidate.jsonl --overwrite"
+          python3 benchmarks/compare_campaigns.py local-baseline.jsonl local-candidate.jsonl --balls 100 --bootstrap 20000 --seed 42 | tee local-compare-100.txt
+          python3 benchmarks/compare_campaigns.py local-baseline.jsonl local-candidate.jsonl --balls 300 --bootstrap 20000 --seed 42 | tee local-compare-300.txt
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/agent/cadq-bounded-local-refresh'
+        with:
+          name: cadq-bounded-local-refresh-${{ github.sha }}
+          retention-days: 90
+          path: |
+            local-*.jsonl
+            local-compare-*.txt
