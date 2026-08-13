@@ -30,9 +30,11 @@ Examples:
 | `DISCRETE_BASELINE` | fixed-step overlap control | tunnels by design |
 | `ALL_PAIRS_CCD` | complete rebuild reference | quadratic prediction work |
 | `GLOBAL_EVENT_QUEUE` | generation-validated heap | stale entries grow under heavy invalidation |
-| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | one retained earliest prediction per owner plus reverse links | currently uses full owner reselection after a change as a correctness safeguard |
+| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | retained earliest-time tie sets plus reverse dependencies and local invalidation | worst-case dependency fan-out can still approach full reselection |
 
 Resolvers are `SEQUENTIAL`, deterministic pairwise impulses; `ITERATIVE`, symmetric projected Gauss-Seidel; and `DIRECT`, a coupled normal-impulse linear solve with iterative fallback for singular or negative-impulse systems.
+
+The CADQ milestone now removes the original correctness-first safeguard that fully reselected every owner after every event. Changed owners and owners whose retained predictions depend on them are fully recomputed; unaffected owners only test the changed bodies for a newly earlier event. An owner retains every event tied for its earliest time, rather than a single edge, so multi-contact simultaneous collision graphs are not silently truncated. CLI output exposes `cadqFullReselections` and `cadqLocalPairRefreshes` so the optimization can be measured instead of inferred. See [the research note](docs/COLLISION_ALGORITHM_RESEARCH.md) for the invariant and falsification criteria.
 
 The motion model is exact constant velocity or constant acceleration between trajectory changes. Constant-acceleration circle contact is a quartic in time; the implementation isolates real roots by recursively partitioning at derivative roots and bisecting, rather than relying on a fragile quartic formula. Floating point root error remains documented in [the research note](docs/COLLISION_ALGORITHM_RESEARCH.md).
 
@@ -46,6 +48,6 @@ Public API: create `Ball`s, construct `Simulation(balls, bounds, config)`, call 
 - `cli` — reproducible seeded workloads and JSONL runner
 - `demo` — optional Swing state consumer
 - `legacy` — preserved 2022 implementation
-- `docs` — methodology and limitations
+- `docs` — methodology, invariants, evidence, and limitations
 
 This is deliberately balls-only: no rotation, friction, polygons, or 3D. See the research note for current limitations and appropriate interpretation of benchmark results.
