@@ -26,6 +26,14 @@ public final class SimulationStats {
             cadqLocalOwnersVisited, cadqLocalOwnersModified, cadqRetainedInstalls, cadqRetainedRemovals,
             cadqInboundSets, cadqInboundClears, cadqTemporalBoundChecks, cadqTemporalPrunes;
 
+    /**
+     * Sweep-and-prune mechanism counts. A rebuild starts from every canonical pair, then the swept X axis and
+     * overlapping Y intervals reduce the pairs that require an exact TOI solve. Fallback rebuilds intentionally
+     * evaluate every pair when no finite conservative sweep horizon is available.
+     */
+    public long sapRebuilds, sapCanonicalPairs, sapXActiveChecks, sapXOverlapPairs,
+            sapExactPairCandidates, sapAllPairsFallbackRebuilds;
+
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
 
@@ -45,6 +53,12 @@ public final class SimulationStats {
 
     public double cadqTemporalPrunePercent() {
         return cadqTemporalBoundChecks == 0 ? 0 : 100.0 * cadqTemporalPrunes / cadqTemporalBoundChecks;
+    }
+
+    public double sapPairPrunePercent() {
+        return sapCanonicalPairs == 0
+                ? 0
+                : 100.0 * (sapCanonicalPairs - sapExactPairCandidates) / sapCanonicalPairs;
     }
 
     /** Sum of the non-overlapping coarse CADQ scheduler phases measured during advance. */
