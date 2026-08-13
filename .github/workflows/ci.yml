@@ -9,15 +9,3 @@ jobs:
         with: { distribution: temurin, java-version: '17', cache: maven }
       - run: mvn -B test
       - run: python3 -m py_compile benchmarks/compare_campaigns.py
-      - name: Run same-JVM local traversal A/B
-        if: github.ref == 'refs/heads/agent/cadq-bounded-local-refresh'
-        run: |
-          mvn -q -Dstyle.color=never exec:java \
-            -Dexec.mainClass=io.github.eddytodd.bouncingballs.research.CadqLocalTraversalTimingCli \
-            > local-interleaved.csv
-      - uses: actions/upload-artifact@v4
-        if: github.ref == 'refs/heads/agent/cadq-bounded-local-refresh'
-        with:
-          name: cadq-local-interleaved-${{ github.sha }}
-          retention-days: 90
-          path: local-interleaved.csv
