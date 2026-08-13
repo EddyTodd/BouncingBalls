@@ -1,0 +1,77 @@
+name: cadq-phase-profile
+
+on:
+  push:
+    branches:
+      - agent/cadq-phase-profile
+
+jobs:
+  profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify regression suite
+        run: mvn -B test
+      - name: Run CADQ phase profile
+        shell: bash
+        run: |
+          mkdir -p target/research
+          mvn -B exec:java \
+            -Dbouncingballs.commit="${GITHUB_SHA}" \
+            -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CadqProfileCli \
+            -Dexec.args="--balls 100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/cadq-profile.jsonl --overwrite"
+      - name: Summarize CADQ phases
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee target/research/profile-summary.txt
+          import json
+          import statistics
+          from collections import defaultdict
+          from pathlib import Path
+
+          rows = [json.loads(line) for line in Path('target/research/cadq-profile.jsonl').read_text().splitlines() if line.strip()]
+          rows = [row for row in rows if row.get('recordType') == 'profile']
+          phases = [
+              'cadqQueueNanos',
+              'cadqDependencyDiscoveryNanos',
+              'cadqFullReselectionNanos',
+              'cadqLocalRefreshNanos',
+          ]
+
+          def report(label, group):
+              median_advance = statistics.median(row['advanceNanos'] for row in group)
+              median_profiled = statistics.median(row['cadqProfiledAdvanceNanos'] for row in group)
+              print(label, 'trials=', len(group),
+                    'advance_ms=', f'{median_advance/1e6:.6f}',
+                    'profiled_ms=', f'{median_profiled/1e6:.6f}',
+                    'coverage_pct=', f'{100*median_profiled/median_advance:.2f}')
+              for phase in phases:
+                  values = [row[phase] for row in group]
+                  median = statistics.median(values)
+                  print(' ', phase,
+                        'median_ms=', f'{median/1e6:.6f}',
+                        'profile_share_pct=', f'{100*median/median_profiled:.2f}' if median_profiled else '0')
+              for counter in ['cadqQueueValidationChecks','cadqDependencyBatches','cadqFullOwnersVisited',
+                              'cadqLocalOwnersVisited','cadqLocalOwnersModified','cadqRetainedInstalls',
+                              'cadqRetainedRemovals','cadqInboundSets','cadqInboundClears','toiQueries']:
+                  print(' ', counter, 'median=', statistics.median(row[counter] for row in group))
+
+          report('ALL', rows)
+          groups = defaultdict(list)
+          for row in rows:
+              groups[row['workload']].append(row)
+          for workload in sorted(groups):
+              report(workload, groups[workload])
+          PY
+      - name: Preserve phase evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cadq-phase-profile-${{ github.sha }}
+          path: target/research/
+          if-no-files-found: error
