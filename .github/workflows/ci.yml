@@ -9,3 +9,6 @@ jobs:
         with: { distribution: temurin, java-version: '17', cache: maven }
       - run: mvn -B test
       - run: python3 -m py_compile benchmarks/compare_campaigns.py
+      - name: Probe local refresh traversal
+        if: github.ref == 'refs/heads/agent/cadq-bounded-local-refresh'
+        run: mvn -q -Dstyle.color=never exec:java -Dexec.mainClass=io.github.eddytodd.bouncingballs.research.CadqLocalTraversalProbeCli
