@@ -26,6 +26,14 @@ public final class SimulationStats {
             cadqLocalOwnersVisited, cadqLocalOwnersModified, cadqRetainedInstalls, cadqRetainedRemovals,
             cadqInboundSets, cadqInboundClears, cadqTemporalBoundChecks, cadqTemporalPrunes;
 
+    /**
+     * Full-reselection candidate-ordering diagnostics. A retained-target opportunity means an owner had a previously
+     * retained canonical pair target available before its outbound selection was invalidated. The target is either
+     * conservatively pruned under the wall-seeded horizon or exact-probed once before the normal canonical scan.
+     */
+    public long cadqWarmStartOpportunities, cadqWarmStartTemporalPrunes, cadqWarmStartExactProbes,
+            cadqWarmStartFiniteHits, cadqWarmStartHorizonTightens;
+
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
 
