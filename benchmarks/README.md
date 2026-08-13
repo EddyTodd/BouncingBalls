@@ -87,11 +87,17 @@ mvn exec:java \
 
 The Maven exec entry point is property-backed in `pom.xml`; `-Dexec.mainClass=...` must select the requested runner.
 
-Temporal pruning is enabled by default and can be disabled for controlled A/B research:
+Temporal pruning is enabled by default. Research controls are independent JVM-startup properties:
 
 ```bash
+# Disable all temporal pruning.
 -Dbouncingballs.cadqTemporalPruning=false
+
+# Keep historical radial pruning but disable the newer axis-separable proof.
+-Dbouncingballs.cadqAxisTemporalPruning=false
 ```
+
+For feature-isolation campaigns, put the feature state in the explicit commit/provenance label and preserve the complete Maven command/log with the artifact. Current schema 4 does not silently infer the axis switch from mechanism counters.
 
 The output starts with an environment/provenance record, followed by reference/trial records and a final summary.
 
@@ -147,7 +153,7 @@ The first 100-ball profile placed about 48% of profiled scheduler time in full r
 | canonical local-owner traversal bound | 1.042 (`0.982–1.108`) | 1.001 (`0.942–1.067`) | reverted |
 | deferred event materialization | 1.033 (`0.969–1.102`) | 0.979 (`0.905–1.051`) | reverted |
 
-### Temporal pruning during advance
+### Radial temporal pruning during advance
 
 The larger enabled/disabled process replication used seven workloads, 20/100 balls, five seeds, two warmups, ten repetitions, and one simulated second. Each side produced **2,100 measured trials with zero physical correctness failures and zero execution failures**.
 
@@ -164,7 +170,7 @@ A same-JVM interleaved A/B then isolated fixed process/JIT artifacts:
 | 20 | 0.996 (`0.982–1.009`) | **0.918 (`0.897–0.940`)** | **0.967 (`0.953–0.980`)** |
 | 100 | 1.006 (`0.995–1.016`) | **0.733 (`0.721–0.746`)** | **0.905 (`0.895–0.915`)** |
 
-### Temporal pruning during construction
+### Radial temporal pruning during construction
 
 The next candidate applied the already-accepted proof during initial owner selection. Accepted master (advance-only pruning) and candidate (construction+advance pruning) were checked out side-by-side on the same runner.
 
@@ -174,17 +180,15 @@ The next candidate applied the already-accepted proof during initial owner selec
 | 300 | **0.565** (`0.512–0.619`) | **0.665** (`0.611–0.718`) | 0.953 (`0.819–1.118`) |
 | 1000 | **0.438** (`0.340–0.578`) | **0.576** (`0.476–0.695`) | 0.987 (`0.903–1.061`) |
 
-Normalized construction therefore improved approximately **26.3%, 43.5%, and 56.2%**. At 1000 bodies, median CADQ exact TOI queries fell **538,147 -> 152,575 (-71.6%)**. The 1000-body population contains only five matched observations, so it is scale evidence rather than a precise general estimate.
-
-All four scale campaign summaries had **0 physical correctness failures and 0 execution failures**.
+Normalized construction improved approximately **26.3%, 43.5%, and 56.2%**. At 1000 bodies, median CADQ exact TOI queries fell **538,147 -> 152,575 (-71.6%)**. The 1000-body population contains only five matched observations, so it is scale evidence rather than a precise general estimate.
 
 Valid evidence: run `31686901547`, artifact `9175894829`, digest `sha256:99b15429e13ff5eb2546ae823ba51d82f169b3225a16aa1aff657de34acb0d1c`.
 
-An earlier attempt is deliberately excluded. The baseline checkout had not been compiled and `tee` masked Maven failure without `pipefail`. The hardened rerun compiled both checkouts, enabled `pipefail`, required the exact four expected JSONL files, and enforced each summary. This failure is part of the provenance record, not part of the performance result.
+An earlier attempt is deliberately excluded. The baseline checkout had not been compiled and `tee` masked Maven failure without `pipefail`. The hardened rerun compiled both checkouts, enabled `pipefail`, required the exact four expected JSONL files, and enforced each summary.
 
 ### True-quartic workload validation
 
-A separate campaign checked the new TOI-degree counters and acceleration semantics:
+A separate campaign checked the TOI-degree counters and acceleration semantics:
 
 - `ACCELERATED`, `DIFFERENTIAL_ACCELERATION`;
 - 20/100 balls;
@@ -203,9 +207,88 @@ At 100 balls:
 - differential-acceleration all-pairs: 19,800 pair queries, all quartic;
 - differential-acceleration CADQ: median 2,351 pair queries, all quartic, 3,171 temporal prunes.
 
-This is mechanism/correctness evidence that temporal pruning avoids genuine quartic solves. It is not yet a separate timing speedup claim for the new workload.
-
 Validation: run `31687633334`, artifact `9176054588`, digest `sha256:458939724ec33bcb270c9d01460062796370387d3722f7c111f2757a09a4dd03`.
+
+## Falsified swept-spatial experiment
+
+A conservative horizon-aware uniform grid was tested as an **additional outer filter** before radial temporal pruning. It rebuilt current-center bins only at scheduler synchronization points and queried them with swept per-axis motion bounds, so high velocity and acceleration remained correctness-safe.
+
+The experiment passed all physical correctness gates and reported impressive geometric exclusion rates—roughly 94–99.8% in representative 100–1000-body probes. That did **not** make it a useful optimization.
+
+Median exact TOI queries were unchanged:
+
+| Bodies | Temporal only | Spatial + temporal |
+|---:|---:|---:|
+| 100 | 732.5 | 732.5 |
+| 300 | 2,105.5 | 2,105.5 |
+| 1000 | 7,906 | 7,906 |
+
+The grid was rejecting the same pairs the cheaper radial predicate already rejected. It only replaced arithmetic with grid rebuilds, cell traversal, candidate collection, and sorting.
+
+Matched total-engine factors were:
+
+- 100: **1.215** (`1.130–1.300`);
+- 300: **1.315** (`1.205–1.440`);
+- 1000: **2.013** (`1.626–2.467`).
+
+The implementation was rejected and removed. Evidence: run `31690445774`, artifact `9177447701`, digest `sha256:4fad8d6c9077242b6036f2ac3d18d003081c1ecc78233acea5219a159b35d0a6`.
+
+This result adds an interpretation rule: **high candidate-exclusion percentage is not evidence of optimization when a cheaper existing predicate would reject the same candidates before exact work.**
+
+Full record: [`../docs/CADQ_SPATIAL_PRUNING_FALSIFICATION.md`](../docs/CADQ_SPATIAL_PRUNING_FALSIFICATION.md).
+
+## Accepted axis-separable temporal experiment
+
+The failed grid exposed a cheaper complementary proof. At contact, each coordinate gap must independently be within combined radius. Therefore a pair is impossible before horizon `h` if either coordinate cannot close enough under its own velocity/acceleration bound.
+
+The axis predicate runs before the historical radial predicate and adds no index, collection, allocation, sorting, or scheduler state.
+
+### Mechanism
+
+In the first A/B, pooled median exact TOI work changed:
+
+| Bodies | Radial only | Radial + axis | Change |
+|---:|---:|---:|---:|
+| 100 | 3,282.5 | 1,927.5 | **-41.3%** |
+| 300 | 27,108.5 | 13,835.5 | **-49.0%** |
+| 1000 | 154,079.5 | 66,083 | **-57.1%** |
+
+Temporal check counts were unchanged; successful prunes increased. A direct initial-horizon probe found the axis condition rejects another roughly **26–30% of all canonical pairs** after accounting for radial rejections.
+
+On the genuine-quartic `DIFFERENTIAL_ACCELERATION` workload, median quartic solves fell:
+
+- 100: `2,275 -> 979` (**-57.0%**);
+- 300: `19,204 -> 7,710` (**-59.9%**);
+- 1000: `151,260 -> 58,116` (**-61.6%**).
+
+### First complete timing run
+
+| Bodies | Construction factor | Advance factor | Total factor |
+|---:|---:|---:|---:|
+| 100 | **0.765** (`0.709–0.824`) | **0.797** (`0.731–0.872`) | **0.779** (`0.726–0.837`) |
+| 300 | **0.737** (`0.697–0.779`) | **0.769** (`0.726–0.814`) | **0.747** (`0.707–0.787`) |
+| 1000 | 0.826 (`0.593–1.100`) | **0.792** (`0.647–0.891`) | 0.810 (`0.605–1.009`) |
+
+At 100/300, every interval is below parity. The first 1000 total/construction sample is inconclusive because it contains only six matched observations.
+
+### Independent process replication
+
+A second complete run reproduced the result:
+
+| Bodies | Construction factor | Advance factor | Total factor |
+|---:|---:|---:|---:|
+| 100 | **0.809** (`0.753–0.867`) | **0.798** (`0.733–0.869`) | **0.816** (`0.762–0.874`) |
+| 300 | **0.798** (`0.751–0.843`) | **0.820** (`0.774–0.866`) | **0.804** (`0.759–0.848`) |
+| 1000 | **0.751** (`0.568–0.919`) | **0.801** (`0.625–0.941`) | **0.776** (`0.587–0.938`) |
+
+Both runs had zero physical correctness failures, zero execution failures, and zero numerical-drift warnings. The 1000-body estimate remains a small-sample scale result despite replication.
+
+Evidence:
+
+- run `31691581974`, artifact `9177829256`, digest `sha256:d8ea7f53b2fb25785da097f36e5bf9f47913b69eba99d3b197dc014489f99a36`;
+- replication run `31691678121`, artifact `9177875301`, digest `sha256:7d6345c1c74f0ae3efa3f9062203aaf7d710b5b44deee0cf9491827e20957bbc`.
+
+Full proof: [`../docs/CADQ_AXIS_TEMPORAL_PRUNING.md`](../docs/CADQ_AXIS_TEMPORAL_PRUNING.md).
 
 ## Interpretation rules
 
@@ -222,6 +305,7 @@ Before making a performance claim:
 - include adversarial workloads;
 - treat `maxQueueSize` only as a structural memory proxy;
 - treat opt-in phase timings only as diagnostic attribution;
+- reject broad phases that only duplicate cheaper predicates, even when their geometric exclusion statistics look impressive;
 - repeat important conclusions on other machines/JVMs before calling them general.
 
 Allocation/heap profiling, cross-machine orchestration, JMH/JFR integration, and hardware counters belong to later milestones or shared benchmark infrastructure. This repository should preserve collision-specific hypotheses, correctness semantics, mechanism counters, and falsification results.
