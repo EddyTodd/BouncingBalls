@@ -17,12 +17,16 @@ final class EventPredictions {
     static double pairTime(Ball a, Ball b, NumericalPolicy p, SimulationStats s) {
         s.candidateChecks++;
         s.toiQueries++;
+        s.pairToiQueries++;
+        if (hasRelativeAcceleration(a, b)) s.quarticPairToiQueries++;
+        else s.quadraticPairToiQueries++;
         return TimeOfImpact.ballBall(a, b, p);
     }
 
     /** Evaluate wall TOI without allocating a CollisionEvent. Returns relative time from {@code now}. */
     static double wallTime(Ball a, Bounds q, int w, NumericalPolicy p, SimulationStats s) {
         s.toiQueries++;
+        s.wallToiQueries++;
         return TimeOfImpact.wall(a, q, w, p);
     }
 
@@ -63,5 +67,14 @@ final class EventPredictions {
     static boolean valid(CollisionEvent e) {
         return e.a().generation == e.generationA()
                 && (e.b() == null || e.b().generation == e.generationB());
+    }
+
+    /**
+     * Under piecewise-constant acceleration the ball-ball contact polynomial has a positive quartic coefficient
+     * whenever relative acceleration is nonzero. Equal acceleration vectors cancel exactly and reduce the pair
+     * equation to the constant-relative-velocity quadratic even though both world trajectories are accelerated.
+     */
+    private static boolean hasRelativeAcceleration(Ball a, Ball b) {
+        return a.acceleration.x != b.acceleration.x || a.acceleration.y != b.acceleration.y;
     }
 }
