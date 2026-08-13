@@ -10,6 +10,10 @@ import java.util.*;
  * ball-ball ownership is therefore {@code ownerSlot < otherSlot}. Retained-event and reverse-dependency bookkeeping
  * uses arrays and {@link BitSet}s instead of object-keyed hash maps/sets.</p>
  *
+ * <p>CADQ evaluates candidate TOIs first and materializes {@link CollisionEvent} objects only for predictions that
+ * survive the owner's earliest-time selection (including ties). The global scheduler still materializes every finite
+ * prediction it stores. This avoids allocating throwaway event objects without changing the TOI mathematics.</p>
+ *
  * <p>A small primitive id-to-slot table avoids boxing on hot queue validation and trajectory invalidation. The heap
  * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
  * maintain reverse dependencies without allocating wrapper objects per event.</p>
@@ -59,13 +63,12 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         Ball owner = bodies[ownerSlot];
 
         for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
-            consider(
-                    EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
-                    otherSlot,
-                    policy);
+            double relativeTime = EventPredictions.pairTime(owner, bodies[otherSlot], policy, stats);
+            considerPrediction(relativeTime, otherSlot, CollisionEvent.NONE, policy);
         }
         for (int wall = 0; wall < 4; wall++) {
-            consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
+            double relativeTime = EventPredictions.wallTime(owner, bounds, wall, policy, stats);
+            considerPrediction(relativeTime, -1, wall, policy);
         }
 
         install(ownerSlot, stats);
@@ -86,15 +89,16 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         for (int otherSlot = changedSlots.nextSetBit(ownerSlot + 1);
              otherSlot >= 0;
              otherSlot = changedSlots.nextSetBit(otherSlot + 1)) {
-            CollisionEvent candidate = EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now);
+            double relativeTime = EventPredictions.pairTime(owner, bodies[otherSlot], policy, stats);
             stats.cadqLocalPairRefreshes++;
-            if (candidate == null) continue;
+            if (!Double.isFinite(relativeTime)) continue;
 
-            if (selection.size == 0 || earlier(candidate.time(), selection.events[0].time(), policy)) {
-                selection.replace(candidate, otherSlot);
+            double candidateTime = now + relativeTime;
+            if (selection.size == 0 || earlier(candidateTime, selection.times[0], policy)) {
+                selection.replacePrediction(candidateTime, otherSlot, CollisionEvent.NONE);
                 modified = true;
-            } else if (policy.sameTime(candidate.time(), selection.events[0].time())) {
-                selection.add(candidate, otherSlot);
+            } else if (policy.sameTime(candidateTime, selection.times[0])) {
+                selection.addPrediction(candidateTime, otherSlot, CollisionEvent.NONE);
                 modified = true;
             }
         }
@@ -106,12 +110,17 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         }
     }
 
-    private void consider(CollisionEvent candidate, int targetSlot, NumericalPolicy policy) {
-        if (candidate == null) return;
-        if (selection.size == 0 || earlier(candidate.time(), selection.events[0].time(), policy)) {
-            selection.replace(candidate, targetSlot);
-        } else if (policy.sameTime(candidate.time(), selection.events[0].time())) {
-            selection.add(candidate, targetSlot);
+    private void considerPrediction(
+            double relativeTime,
+            int targetSlot,
+            int wall,
+            NumericalPolicy policy) {
+        if (!Double.isFinite(relativeTime)) return;
+        double candidateTime = now + relativeTime;
+        if (selection.size == 0 || earlier(candidateTime, selection.times[0], policy)) {
+            selection.replacePrediction(candidateTime, targetSlot, wall);
+        } else if (policy.sameTime(candidateTime, selection.times[0])) {
+            selection.addPrediction(candidateTime, targetSlot, wall);
         }
     }
 
@@ -139,8 +148,20 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     private void install(int ownerSlot, SimulationStats stats) {
         if (selection.size == 0) return;
 
-        CollisionEvent[] events = Arrays.copyOf(selection.events, selection.size);
+        CollisionEvent[] events = new CollisionEvent[selection.size];
         int[] targets = Arrays.copyOf(selection.targets, selection.size);
+        Ball owner = bodies[ownerSlot];
+        for (int i = 0; i < selection.size; i++) {
+            CollisionEvent event = selection.events[i];
+            if (event == null) {
+                int targetSlot = selection.targets[i];
+                event = targetSlot >= 0
+                        ? EventPredictions.materializePair(owner, bodies[targetSlot], selection.times[i], stats)
+                        : EventPredictions.materializeWall(owner, selection.walls[i], selection.times[i], stats);
+            }
+            events[i] = event;
+        }
+
         outbound[ownerSlot] = events;
         outboundTargets[ownerSlot] = targets;
         stats.cadqRetainedInstalls++;
@@ -257,11 +278,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         }
         if (profile) stats.cadqFullReselectionNanos += System.nanoTime() - fullStart;
 
-        // Canonical ownership means ownerSlot >= max(changedSlots) cannot own a pair with any changed body.
-        // Those owners have no local refresh work unless they were already selected for full recomputation above.
         long localStart = profile ? System.nanoTime() : 0;
-        int localOwnerLimit = changedSlots.length() - 1;
-        for (int ownerSlot = 0; ownerSlot < localOwnerLimit; ownerSlot++) {
+        for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
             if (!full.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
         }
         if (profile) stats.cadqLocalRefreshNanos += System.nanoTime() - localStart;
@@ -274,10 +292,12 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         now += dt;
     }
 
-    /** Reused tie-set builder: candidate evaluation does not allocate per-candidate metadata wrappers. */
+    /** Reused tie-set builder for retained events and not-yet-materialized selected predictions. */
     private static final class SelectionBuilder {
         private CollisionEvent[] events = new CollisionEvent[4];
         private int[] targets = new int[4];
+        private double[] times = new double[4];
+        private int[] walls = new int[4];
         private int size;
 
         void reset() {
@@ -290,22 +310,31 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
                 return;
             }
             ensure(sourceEvents.length);
-            System.arraycopy(sourceEvents, 0, events, 0, sourceEvents.length);
-            System.arraycopy(sourceTargets, 0, targets, 0, sourceTargets.length);
+            for (int i = 0; i < sourceEvents.length; i++) {
+                CollisionEvent event = sourceEvents[i];
+                events[i] = event;
+                targets[i] = sourceTargets[i];
+                times[i] = event.time();
+                walls[i] = event.wall();
+            }
             size = sourceEvents.length;
         }
 
-        void replace(CollisionEvent event, int targetSlot) {
+        void replacePrediction(double time, int targetSlot, int wall) {
             ensure(1);
-            events[0] = event;
+            events[0] = null;
             targets[0] = targetSlot;
+            times[0] = time;
+            walls[0] = wall;
             size = 1;
         }
 
-        void add(CollisionEvent event, int targetSlot) {
+        void addPrediction(double time, int targetSlot, int wall) {
             ensure(size + 1);
-            events[size] = event;
+            events[size] = null;
             targets[size] = targetSlot;
+            times[size] = time;
+            walls[size] = wall;
             size++;
         }
 
@@ -314,6 +343,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             int capacity = Math.max(required, events.length * 2);
             events = Arrays.copyOf(events, capacity);
             targets = Arrays.copyOf(targets, capacity);
+            times = Arrays.copyOf(times, capacity);
+            walls = Arrays.copyOf(walls, capacity);
         }
     }
 
