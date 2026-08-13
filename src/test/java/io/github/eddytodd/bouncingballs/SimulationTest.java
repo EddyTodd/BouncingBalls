@@ -42,4 +42,21 @@ class SimulationTest {
   assertTrue(updateFull<balls.size(),"a local two-body change must not trigger the old all-owner full reselection");
   assertTrue(stats.cadqLocalPairRefreshes>0,"unaffected owners should only test changed bodies");
  }
+
+ @Test void eventBudgetCountsPhysicalContactsRatherThanSchedulerDuplicates(){
+  double referenceTime=runTwoTransfersWithBudget(SchedulerKind.ALL_PAIRS_CCD);
+  double cadqTime=runTwoTransfersWithBudget(SchedulerKind.COMPUTE_AHEAD_DEPENDENCY_QUEUE);
+  assertEquals(8.0,referenceTime,1e-10);
+  assertEquals(referenceTime,cadqTime,1e-10,"CADQ duplicate ownership entries must not consume extra event budget");
+ }
+
+ private double runTwoTransfersWithBudget(SchedulerKind scheduler){
+  Ball a=ball(0,10,2),b=ball(1,20,0),c=ball(2,30,0);
+  Simulation simulation=new Simulation(List.of(a,b,c),new Bounds(0,-10,100,10),new SimulationConfig(scheduler,ResolverKind.ITERATIVE,NumericalPolicy.DEFAULT,.001));
+  simulation.advance(10,2);
+  assertEquals(0,a.velocity.x,1e-8);
+  assertEquals(0,b.velocity.x,1e-8);
+  assertEquals(2,c.velocity.x,1e-8);
+  return simulation.time();
+ }
 }
