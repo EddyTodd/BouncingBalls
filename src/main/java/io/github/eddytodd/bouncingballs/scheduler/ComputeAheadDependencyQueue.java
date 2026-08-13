@@ -15,32 +15,40 @@ import java.util.*;
  * maintain reverse dependencies without allocating wrapper objects per event.</p>
  *
  * <p>Full owner selections, including initial construction, seed their current-best horizon with the four cheap wall
- * TOIs. Pair candidates whose conservative temporal reachability bound cannot reach contact by that horizon skip the
- * exact pair TOI solve. Local refreshes use their already-valid retained event as the horizon. Set
- * {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve the exact pre-pruning path for research A/B runs.</p>
+ * TOIs. A conservative swept spatial grid can first omit canonical pairs whose current centers cannot enter the same
+ * contact envelope during that horizon. Remaining pairs then pass through the existing temporal reachability bound
+ * before exact TOI. Local refreshes retain the temporal bound because their changed-pair sets are already small.</p>
+ *
+ * <p>Set {@code -Dbouncingballs.cadqSpatialPruning=false} or
+ * {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve earlier research paths for matched A/B runs.</p>
  *
  * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
  * avoid the repeated {@link System#nanoTime()} calls used by the diagnostic profiler.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private static final String TEMPORAL_PRUNING_PROPERTY = "bouncingballs.cadqTemporalPruning";
+    private static final String SPATIAL_PRUNING_PROPERTY = "bouncingballs.cadqSpatialPruning";
     private static final double TIME_SLACK_MULTIPLIER = 4.0;
 
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
     private final SelectionBuilder selection = new SelectionBuilder();
+    private final SweptSpatialGrid spatialGrid = new SweptSpatialGrid();
     private Ball[] bodies = new Ball[0];
     private IntSlotMap slotById = new IntSlotMap(0);
     private CollisionEvent[][] outbound = new CollisionEvent[0][];
     private int[][] outboundTargets = new int[0][];
     private BitSet[] inbound = new BitSet[0];
+    private int[] spatialCandidates = new int[0];
     private double now;
     private boolean profile;
     private boolean temporalPruning;
+    private boolean spatialPruning;
 
     @Override
     public void rebuild(List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
         profile = Boolean.getBoolean("bouncingballs.cadqProfile");
         temporalPruning = Boolean.parseBoolean(System.getProperty(TEMPORAL_PRUNING_PROPERTY, "true"));
+        spatialPruning = Boolean.parseBoolean(System.getProperty(SPATIAL_PRUNING_PROPERTY, "true"));
         bodies = balls.toArray(Ball[]::new);
         Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
 
@@ -51,11 +59,11 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         outbound = new CollisionEvent[bodies.length][];
         outboundTargets = new int[bodies.length][];
         inbound = new BitSet[bodies.length];
+        spatialCandidates = new int[bodies.length];
         now = 0;
 
-        // The advance-only experiment established that the temporal bound is conservative and useful. Initial owner
-        // selection has the same exact wall horizon available, so the accepted mechanism can now prune construction
-        // pair solves as a separately measured scaling experiment.
+        if (spatialPruning) spatialGrid.rebuild(bodies, bounds, stats);
+
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
             recompute(ownerSlot, bounds, policy, stats, true);
         }
@@ -67,22 +75,38 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             Bounds bounds,
             NumericalPolicy policy,
             SimulationStats stats,
-            boolean allowTemporalPruning) {
+            boolean allowHorizonPruning) {
         removeOutbound(ownerSlot, stats);
         selection.reset();
         Ball owner = bodies[ownerSlot];
+        boolean horizonBased = allowHorizonPruning && (temporalPruning || spatialPruning);
 
-        if (temporalPruning && allowTemporalPruning) {
-            // Four wall queries are cheap and usually establish a finite upper bound before the O(N) pair scan.
+        if (horizonBased) {
+            // Four wall queries are cheap and usually establish a finite upper bound before pair selection.
             for (int wall = 0; wall < 4; wall++) {
                 consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
             }
-            for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
-                if (shouldPrunePair(owner, bodies[otherSlot], policy, stats)) continue;
-                consider(
-                        EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
-                        otherSlot,
-                        policy);
+
+            if (spatialPruning) {
+                double horizon = currentPruningHorizon(policy);
+                int count = spatialGrid.queryCanonicalCandidates(
+                        ownerSlot, horizon, policy, stats, spatialCandidates);
+                for (int index = 0; index < count; index++) {
+                    int otherSlot = spatialCandidates[index];
+                    if (temporalPruning && shouldPrunePair(owner, bodies[otherSlot], policy, stats)) continue;
+                    consider(
+                            EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
+                            otherSlot,
+                            policy);
+                }
+            } else {
+                for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
+                    if (temporalPruning && shouldPrunePair(owner, bodies[otherSlot], policy, stats)) continue;
+                    consider(
+                            EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
+                            otherSlot,
+                            policy);
+                }
             }
         } else {
             for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
@@ -141,21 +165,27 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             Ball other,
             NumericalPolicy policy,
             SimulationStats stats) {
-        if (selection.size == 0) return false;
-
-        double bestTime = selection.events[0].time();
-        double relativeHorizon = bestTime - now;
-        if (!Double.isFinite(relativeHorizon)) return false;
-
-        double timeScale = Math.max(Math.abs(bestTime), Math.abs(now));
-        double tieSlack = TIME_SLACK_MULTIPLIER * policy.tolerance(timeScale);
-        double horizon = Math.max(0.0, relativeHorizon) + tieSlack;
+        double horizon = currentPruningHorizon(policy);
+        if (!Double.isFinite(horizon)) return false;
 
         stats.cadqTemporalBoundChecks++;
         if (TemporalReachability.couldContactWithin(owner, other, horizon, policy)) return false;
 
         stats.cadqTemporalPrunes++;
         return true;
+    }
+
+    private double currentPruningHorizon(NumericalPolicy policy) {
+        if (selection.size == 0) return Double.NaN;
+
+        double bestTime = selection.events[0].time();
+        double relativeHorizon = bestTime - now;
+        if (!Double.isFinite(relativeHorizon)) return Double.NaN;
+
+        double timeScale = Math.max(Math.abs(bestTime), Math.abs(now));
+        double tieSlack = TIME_SLACK_MULTIPLIER * policy.tolerance(timeScale);
+        double horizon = Math.max(0.0, relativeHorizon) + tieSlack;
+        return Double.isFinite(horizon) ? horizon : Double.NaN;
     }
 
     private void consider(CollisionEvent candidate, int targetSlot, NumericalPolicy policy) {
@@ -299,6 +329,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         stats.cadqDependencyBatches++;
         stats.cadqFullOwnersVisited += fullOwners;
         if (profile) stats.cadqDependencyDiscoveryNanos += System.nanoTime() - dependencyStart;
+
+        long spatialStart = profile ? System.nanoTime() : 0;
+        if (spatialPruning) spatialGrid.rebuild(bodies, bounds, stats);
+        if (profile) stats.cadqSpatialRebuildNanos += System.nanoTime() - spatialStart;
 
         // Snapshot the full-reselection set before recompute mutates reverse dependencies.
         long fullStart = profile ? System.nanoTime() : 0;

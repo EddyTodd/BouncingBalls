@@ -19,12 +19,15 @@ public final class SimulationStats {
     public long pairToiQueries, quadraticPairToiQueries, quarticPairToiQueries, wallToiQueries;
 
     /** Opt-in CADQ coarse phase timings. Zero when -Dbouncingballs.cadqProfile=true is not supplied. */
-    public long cadqQueueNanos, cadqDependencyDiscoveryNanos, cadqFullReselectionNanos, cadqLocalRefreshNanos;
+    public long cadqQueueNanos, cadqDependencyDiscoveryNanos, cadqSpatialRebuildNanos,
+            cadqFullReselectionNanos, cadqLocalRefreshNanos;
 
     /** CADQ mechanism counts used to interpret coarse timings without adding nested timer overhead. */
     public long cadqQueueValidationChecks, cadqDependencyBatches, cadqFullOwnersVisited,
             cadqLocalOwnersVisited, cadqLocalOwnersModified, cadqRetainedInstalls, cadqRetainedRemovals,
-            cadqInboundSets, cadqInboundClears, cadqTemporalBoundChecks, cadqTemporalPrunes;
+            cadqInboundSets, cadqInboundClears, cadqTemporalBoundChecks, cadqTemporalPrunes,
+            cadqSpatialGridRebuilds, cadqSpatialQueries, cadqSpatialCellVisits, cadqSpatialCandidates,
+            cadqSpatialPairsExcluded, cadqSpatialFallbacks, cadqSpatialMaxGridCells;
 
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
@@ -47,9 +50,15 @@ public final class SimulationStats {
         return cadqTemporalBoundChecks == 0 ? 0 : 100.0 * cadqTemporalPrunes / cadqTemporalBoundChecks;
     }
 
+    public double cadqSpatialExcludePercent() {
+        long considered = cadqSpatialCandidates + cadqSpatialPairsExcluded;
+        return considered == 0 ? 0 : 100.0 * cadqSpatialPairsExcluded / considered;
+    }
+
     /** Sum of the non-overlapping coarse CADQ scheduler phases measured during advance. */
     public long cadqProfiledAdvanceNanos() {
-        return cadqQueueNanos + cadqDependencyDiscoveryNanos + cadqFullReselectionNanos + cadqLocalRefreshNanos;
+        return cadqQueueNanos + cadqDependencyDiscoveryNanos + cadqSpatialRebuildNanos
+                + cadqFullReselectionNanos + cadqLocalRefreshNanos;
     }
 
     void observePhysicalBatch(List<Contact> contacts) {
