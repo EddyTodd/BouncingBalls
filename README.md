@@ -38,7 +38,18 @@ mvn exec:java \
 
 Correctness is structural as well as numerical. Runs record a deterministic physical contact-history fingerprint. A measured scheduler must reproduce the reference collision history and remain inside an explicit final-state drift ceiling. A tighter state comparison remains visible separately as `numericalDriftWarning`, so floating-point path dependence is not mislabeled as a missed collision or silently ignored.
 
-The first bounded post-optimization hosted campaign produced **630 measured trials with 0 physical correctness failures and 0 execution failures**. It also retained 30 strict numerical-drift warnings in high-speed/wall-heavy 100-ball cases whose physical collision histories were identical.
+The bounded research matrix used during the current CADQ milestones contains 42 scenarios and 630 measured trials. Accepted implementations have **0 physical correctness failures and 0 execution failures**. Thirty strict numerical-drift warnings remain reproducible in high-speed/wall-heavy 100-ball cases whose physical collision histories are identical.
+
+Campaign-to-campaign timing comparisons can be reproduced without third-party Python packages:
+
+```bash
+python3 benchmarks/compare_campaigns.py \
+  benchmarks/results/baseline.jsonl \
+  benchmarks/results/candidate.jsonl \
+  --balls 100
+```
+
+The comparison first forms matched CADQ/GLOBAL ratios for each workload/seed/repetition and then bootstraps the candidate-vs-baseline log-ratio change. This reduces hosted-runner/JVM noise but does not replace cross-machine replication.
 
 See [`benchmarks/README.md`](benchmarks/README.md) for the campaign protocol and [`docs/COLLISION_ALGORITHM_RESEARCH.md`](docs/COLLISION_ALGORITHM_RESEARCH.md) for the algorithmic evidence and interpretation.
 
@@ -49,7 +60,7 @@ See [`benchmarks/README.md`](benchmarks/README.md) for the campaign protocol and
 | `DISCRETE_BASELINE` | fixed-step overlap control | tunnels by design |
 | `ALL_PAIRS_CCD` | complete rebuild correctness reference | quadratic prediction work |
 | `GLOBAL_EVENT_QUEUE` | generation-validated global heap | stale entries and queue growth under invalidation |
-| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical pair ownership, earliest tie sets, reverse dependencies, local invalidation | bookkeeping overhead remains measurable |
+| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical pair ownership, dense retained tie sets, indexed reverse dependencies, local invalidation | advance-time dependency maintenance remains measurable |
 
 Resolvers are `SEQUENTIAL`, deterministic pairwise impulses; `ITERATIVE`, symmetric projected Gauss-Seidel; and `DIRECT`, a coupled normal-impulse linear solve with iterative fallback for singular or negative-impulse systems.
 
@@ -60,11 +71,28 @@ CADQ has evolved through measured falsification rather than assumed optimization
 1. an initial correctness safeguard fully reselected every owner and empirically destroyed the intended advantage;
 2. dependency-local invalidation removed that safeguard and preserved simultaneous-contact tie sets;
 3. the first serious campaign showed CADQ still performed almost twice as many TOI queries as the global heap;
-4. canonical lower-id ownership now evaluates each unordered ball pair once per full selection.
+4. canonical lower-id ownership reduced each unordered ball pair to one prediction and brought CADQ TOI work close to GLOBAL;
+5. dense simulation-local slots, array-backed retained sets, `BitSet` reverse dependencies, direct heap events, and a primitive id-to-slot table reduced the remaining bookkeeping penalty.
 
-After canonical ownership, 100-ball CADQ TOI counts are approximately equal to GLOBAL while CADQ keeps a substantially smaller global queue. In the same hosted campaign CADQ was still generally about 2–20% slower than GLOBAL in most 100-ball workloads (with a larger sparse-case gap), so the current bottleneck is no longer primarily collision prediction. The next research target is dense/indexed dependency bookkeeping before introducing a spatial broad phase.
+The dense representation deliberately supports arbitrary unique `int` body ids: ids need not be contiguous, positive, or input-sorted. `Simulation` requires uniqueness because stable ids define canonical pair ownership.
 
-`Simulation` requires unique body ids because canonical pair ownership uses stable ids to choose the single owner of each unordered pair.
+### Dense-bookkeeping result
+
+The dense candidate was evaluated with the same seven workload families, 20/100 balls, three seeds, one warmup, five measured repetitions, and one simulated second as the canonical-ownership baseline. Both campaigns passed all 630 physical-correctness trials.
+
+For the 105 matched 100-ball workload/seed/repetition observations, the geometric-mean paired CADQ/GLOBAL ratios changed as follows:
+
+| Metric | Canonical hash bookkeeping | Dense primitive bookkeeping | Relative change |
+|---|---:|---:|---:|
+| total engine | 1.148 | 1.059 | **-7.7%** |
+| construction | 1.033 | 0.990 | -4.1% (not statistically conclusive) |
+| advance | 1.354 | 1.223 | **-9.7%** |
+
+A deterministic 20,000-resample bootstrap on the matched ratio changes places the 100-ball total-engine factor at approximately `0.869–0.978` and the advance factor at `0.855–0.954`. The result therefore supports the dense representation on this hosted-runner experiment. It does **not** establish a universal machine-independent speedup.
+
+The experiment also falsified two tempting implementation choices. A first dense version added per-event wrapper records and boxed identity lookup; it improved portions of `advance()` but failed to improve total engine time. Removing those wrappers and using direct `CollisionEvent` heap entries plus a primitive id-to-slot table produced the accepted result. A subsequent lazy-refresh/reused-mask micro-optimization improved advance-time point estimates in replication runs but did not show a reproducible total-engine benefit over the accepted dense version, so it was reverted rather than merged on intuition.
+
+CADQ still has work to do. In the accepted dense campaign its aggregate 100-ball CADQ/GLOBAL total ratio remained about **1.059**, and its advance-only ratio about **1.223**. Collision-prediction counts are already near GLOBAL, so the next investigation should isolate queue validation, reverse-dependency maintenance, owner refresh traversal, and retained-set mutation inside `advance()` before introducing a spatial broad phase.
 
 The motion model is exact constant velocity or constant acceleration between trajectory changes. Constant-acceleration circle contact is quartic in time; the implementation isolates real roots by recursively partitioning at derivative roots and bisecting rather than relying on a fragile closed-form quartic implementation.
 
@@ -77,7 +105,7 @@ Public API: create `Ball`s with unique ids, construct `Simulation(balls, bounds,
 - `resolver` — simultaneous-island strategies
 - `research` — canonical differential state oracle
 - `cli` — seeded workloads, single-run experiments, and campaign runner
-- `benchmarks` — empirical protocol; machine-local raw results are ignored by Git
+- `benchmarks` — empirical protocol and paired campaign comparison; machine-local raw results are ignored by Git
 - `demo` — optional Swing state consumer
 - `legacy` — preserved 2022 implementation
 - `docs` — methodology, invariants, evidence, and limitations
