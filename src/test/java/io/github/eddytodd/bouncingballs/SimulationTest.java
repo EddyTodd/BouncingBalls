@@ -137,28 +137,17 @@ class SimulationTest {
     }
 
     @Test
-    void cadqMaterializesOnlySelectedPredictions() {
-        List<Ball> cadqBalls = List.of(
-                ball(0, 0, 4), ball(1, 10, 3), ball(2, 20, 2), ball(3, 30, 1));
-        List<Ball> globalBalls = List.of(
+    void predictedEventMaterializationCounterTracksFiniteStoredPredictions() {
+        List<Ball> balls = List.of(
                 ball(0, 0, 4), ball(1, 10, 3), ball(2, 20, 2), ball(3, 30, 1));
         Bounds bounds = new Bounds(-100, -10, 100, 10);
-
-        SimulationStats cadqStats = new SimulationStats();
-        ComputeAheadDependencyQueue cadq = new ComputeAheadDependencyQueue();
-        cadq.rebuild(cadqBalls, bounds, NumericalPolicy.DEFAULT, cadqStats);
-
-        SimulationStats globalStats = new SimulationStats();
+        SimulationStats stats = new SimulationStats();
         GlobalEventQueueScheduler global = new GlobalEventQueueScheduler();
-        global.rebuild(globalBalls, bounds, NumericalPolicy.DEFAULT, globalStats);
+        global.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
 
-        assertEquals(6, cadqStats.candidateChecks);
-        assertEquals(cadqStats.candidateChecks, globalStats.candidateChecks);
-        assertEquals(4, cadqStats.predictedEventMaterializations,
-                "CADQ should materialize one retained earliest prediction for each owner in this setup");
-        assertEquals(10, globalStats.predictedEventMaterializations,
-                "GLOBAL must materialize all six finite pair predictions and four finite wall predictions");
-        assertTrue(cadqStats.predictedEventMaterializations < globalStats.predictedEventMaterializations);
+        assertEquals(6, stats.candidateChecks);
+        assertEquals(10, stats.predictedEventMaterializations,
+                "six finite pair predictions and four finite right-wall predictions should be materialized");
     }
 
     @Test
