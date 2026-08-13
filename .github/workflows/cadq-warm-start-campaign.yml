@@ -1,7 +1,8 @@
 name: cadq-warm-start-campaign
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [agent/cadq-warm-start-ordering]
 
 permissions:
   contents: read
@@ -74,10 +75,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for f in warm-baseline-100-300.jsonl warm-candidate-100-300.jsonl warm-baseline-1000.jsonl warm-candidate-1000.jsonl; do
-            test "$(grep -c '"'"'"recordType"'"'":"'"'"summary"'"'' "${f}")" -eq 1
-            grep -q '"'"'"passed"'"':true' "${f}"
-          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = [
+              Path('warm-baseline-100-300.jsonl'),
+              Path('warm-candidate-100-300.jsonl'),
+              Path('warm-baseline-1000.jsonl'),
+              Path('warm-candidate-1000.jsonl'),
+          ]
+          for path in files:
+              records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+              summaries = [r for r in records if r.get('recordType') == 'summary']
+              assert len(summaries) == 1, (path, len(summaries))
+              summary = summaries[0]
+              assert summary['passed'] is True, (path, summary)
+              assert summary['correctnessFailures'] == 0, (path, summary)
+              assert summary['executionFailures'] == 0, (path, summary)
+          PY
+
           cat > warm-start-config.txt <<EOF
           commit=${GITHUB_SHA}
           baseline=-Dbouncingballs.cadqWarmStartOrdering=false
