@@ -5,8 +5,8 @@ package io.github.eddytodd.bouncingballs.core;
  *
  * <p>If two circles begin with center separation {@code d} and combined radius {@code R}, then contact within a
  * horizon {@code t} requires the relative trajectory to cover at least {@code d - R}. The relative displacement is
- * bounded by {@code |v| t + 0.5 |a| t^2}. The radial bound deliberately uses L1 norms for velocity and acceleration,
- * which are cheap upper bounds on the Euclidean norms.</p>
+ * bounded by {@code |v| t + 0.5 |a| t^2}. The historical radial bound deliberately uses L1 norms for velocity and
+ * acceleration, which are cheap upper bounds on the Euclidean norms.</p>
  *
  * <p>An additional axis-separable proof is strictly complementary: at contact, both coordinate separations must have
  * magnitude at most {@code R}. If either current coordinate gap exceeds {@code R} plus the maximum possible motion
@@ -16,16 +16,21 @@ package io.github.eddytodd.bouncingballs.core;
  * <p>Both proofs inflate their reachable limits by the shared numerical policy and fail open on non-finite or
  * overflowed inputs. A {@code false} result is therefore a conservative proof of no contact by the supplied horizon;
  * {@code true} means only "possibly reachable" and still requires later filtering or an exact TOI solve.</p>
+ *
+ * <p>For causal research A/B runs the axis proof can be disabled at JVM startup with
+ * {@code -Dbouncingballs.cadqAxisTemporalPruning=false}; the accepted radial proof remains active.</p>
  */
 public final class TemporalReachability {
     private static final double SLACK_MULTIPLIER = 8.0;
+    private static final boolean AXIS_PRUNING_ENABLED = Boolean.parseBoolean(
+            System.getProperty("bouncingballs.cadqAxisTemporalPruning", "true"));
 
     private TemporalReachability() {}
 
-    /** Apply the stronger axis proof first, then the historical radial proof. */
+    /** Apply the stronger axis proof first when enabled, then the historical radial proof. */
     public static boolean couldContactWithin(Ball a, Ball b, double horizon, NumericalPolicy policy) {
-        return couldContactWithinAxes(a, b, horizon, policy)
-                && couldContactWithinRadial(a, b, horizon, policy);
+        if (AXIS_PRUNING_ENABLED && !couldContactWithinAxes(a, b, horizon, policy)) return false;
+        return couldContactWithinRadial(a, b, horizon, policy);
     }
 
     /**
