@@ -42,7 +42,7 @@ class SweptSpatialGridTest {
                             && exact <= horizon + NumericalPolicy.DEFAULT.tolerance(Math.max(exact, horizon))) {
                         assertTrue(
                                 included.get(other),
-                                () -> "grid excluded exact collision owner=" + owner + " other=" + other
+                                "grid excluded exact collision owner=" + owner + " other=" + other
                                         + " horizon=" + horizon + " toi=" + exact);
                     }
                 }
