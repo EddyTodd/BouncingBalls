@@ -6,11 +6,11 @@ Bodies are circles with independent radius, mass, restitution, position, velocit
 
 ## Scheduling and CADQ
 
-All-pairs CCD is the small-system reference. The global heap stores absolute-time events and captures each participating body's generation; invalid events are discarded lazily.
+All-pairs CCD is the small-system correctness reference. The global heap stores absolute-time events and captures each participating body's generation; invalid events are discarded lazily.
 
 CADQ is the repository's compute-ahead hypothesis. The first implementation stored one earliest prediction per owner plus reverse dependencies, but after each trajectory change it fully reselected every owner as a correctness safeguard. That version was intentionally not an optimization claim: its adversarial workload showed 92,700 TOI queries, 900 reselections, and an 88.5% stale-pop rate for 100 balls.
 
-The current milestone replaces that safeguard with local invalidation while preserving correctness invariants.
+The current implementation replaces that safeguard with local invalidation while preserving correctness invariants.
 
 ### CADQ invariant
 
@@ -39,24 +39,57 @@ This does **not** imply asymptotic improvement in every workload. If dependency 
 - adversarial dependency fan-out must be reported rather than hidden, even if it defeats CADQ;
 - wall-clock conclusions require repeated benchmark campaigns; operation counters alone establish mechanism, not speed.
 
-CLI JSONL now reports `cadqFullReselections`, `cadqLocalPairRefreshes`, queue size, TOI queries, stale events, and dependency invalidations so these hypotheses can be tested directly.
+JSONL reports `cadqFullReselections`, `cadqLocalPairRefreshes`, queue size, TOI queries, stale events, and dependency invalidations so these hypotheses can be tested directly.
 
 ## Simultaneous contacts
 
 Events within `NumericalPolicy.sameTime` are advanced together, deduplicated, partitioned into ball-sharing islands, then solved deterministically. Sequential is the ordering-sensitive baseline. Iterative uses forward/reverse projected Gauss-Seidel. Direct constructs the coupled normal-impulse matrix and falls back when singular or nonphysical. A zero-time batch guard aborts rather than silently looping.
 
-CADQ now has explicit regression coverage for a three-body line in which the middle body has two equally early contacts. The retained owner tie sets must expose both physical contacts in the same scheduler batch. A second regression verifies that a local two-body trajectory change does not mechanically trigger the former all-owner full reselection and that unaffected owners use changed-body refreshes.
+CADQ has explicit regression coverage for a three-body line in which the middle body has two equally early contacts. The retained owner tie sets must expose both physical contacts in the same scheduler batch. A second regression verifies that a local two-body trajectory change does not mechanically trigger the former all-owner full reselection and that unaffected owners use changed-body refreshes.
+
+## Differential validation methodology
+
+Performance evidence is now gated by a differential state oracle rather than by event counts alone.
+
+For each scenario, `CampaignCli` regenerates a fresh deterministic initial state for every scheduler invocation and executes `ALL_PAIRS_CCD` as the correctness reference. The final state is canonicalized by ball id and includes simulation time, position, and velocity. `GLOBAL_EVENT_QUEUE` and `COMPUTE_AHEAD_DEPENDENCY_QUEUE` are accepted only when every scalar agrees with the reference under a scale-aware tolerance derived from `NumericalPolicy` and the campaign tolerance multiplier.
+
+A campaign records a failure and exits unsuccessfully if a scheduler throws, fails to reach an equivalent simulation time, produces a non-finite state, changes the body identity set, or exceeds the state tolerance. This makes correctness a prerequisite for interpreting speed or mechanism counters.
+
+The Maven test suite contains a smaller deterministic matrix across all workload families and multiple seeds. The campaign is intentionally larger and emits the raw evidence artifact.
+
+## Workload validity and provenance
+
+The original randomized workload generator sampled positions independently, which meant dense or clustered cases could begin overlapped and Gaussian samples could theoretically begin outside the box. Such a state confounds collision-search research with zero-time penetration recovery.
+
+Randomized workloads now use deterministic rejection sampling and are validated before simulation: ids must be unique, state values finite, every body must be inside the bounds, and no pair may begin penetrated. Deliberately constructed workloads may start exactly touching when the topology requires it. `NEWTON_CRADLE` also expands its domain for large requested counts so the generated system remains valid.
+
+This sanitation changes the experiment population. Historical numbers from the earlier generator remain historical observations, but they are not directly interchangeable with new campaign measurements. Exact commit identity and campaign configuration should accompany every published dataset.
+
+## Timing definition
+
+The previous single-run CLI measured only `Simulation.advance()`. That omits the scheduler's initial event construction, which can be substantial and differs among algorithms. New evidence separates:
+
+- workload generation time, excluded from engine timing;
+- `constructionNanos`, including simulation construction and initial scheduler rebuild;
+- `advanceNanos`, timing only the requested simulation advance;
+- `totalEngineNanos = constructionNanos + advanceNanos`.
+
+The campaign performs configurable warmups and rotates scheduler execution order across repetitions to reduce fixed-order and JVM warmup bias. These are still whole-program JVM timings, not a substitute for a dedicated JMH/JFR or cross-machine benchmark layer. Small timing differences should therefore be treated cautiously.
+
+`maxQueueSize` is useful as a structural memory proxy, but it is not a heap-allocation measurement. Allocation rate, retained heap, GC behavior, cache effects, and hardware counters require later instrumentation.
 
 ## Validation and evidence status
 
-`mvn test` validates velocity TOI, accelerated TOI, elastic head-on conservation across all resolvers, agreement of the three CCD schedulers on a small case, stale-event observation, CADQ simultaneous tie batching, and CADQ local invalidation behavior.
+The intended test gate now covers velocity TOI, accelerated TOI, elastic head-on conservation across all resolvers, stale-event behavior, CADQ simultaneous tie batching, CADQ local invalidation, deterministic/valid workload construction, large-cradle bounds, and a multi-workload/multi-seed differential scheduler matrix.
 
-Historical smoke observations from the first laboratory milestone remain useful as a baseline, not a performance conclusion: all-pairs sparse 10 balls/1 s performed 85 TOI queries with no contacts; global heap sparse 100 performed 5,865 queries and resolved 3 contacts in 20.6 ms; the original safeguarded CADQ adversarial 100 performed 92,700 queries, 900 reselections, and 88.5% stale pops in 44.6 ms on a local Windows 11 / Microsoft OpenJDK 17 run.
+Historical smoke observations from the first laboratory milestone remain useful only as a pre-optimization baseline: all-pairs sparse 10 balls/1 s performed 85 TOI queries with no contacts; global heap sparse 100 performed 5,865 queries and resolved 3 contacts in 20.6 ms; the original safeguarded CADQ adversarial 100 performed 92,700 queries, 900 reselections, and 88.5% stale pops in 44.6 ms on a local Windows 11 / Microsoft OpenJDK 17 run.
 
-Those measurements predate the local-invalidation implementation. They must not be presented as results for the optimized CADQ. The next empirical campaign should rerun identical seeds and workloads against `ALL_PAIRS_CCD`, `GLOBAL_EVENT_QUEUE`, and `COMPUTE_AHEAD_DEPENDENCY_QUEUE`, preserving raw JSONL before drawing speed or memory conclusions.
+Those measurements predate both local CADQ invalidation and workload sanitation. They must not be presented as results for the current implementation.
+
+No new wall-clock performance result is claimed by this milestone. The execution environment used to prepare it does not provide Maven or outbound GitHub access to obtain a clean local checkout, and the repository's hosted Actions quota may be unavailable. The contribution of this pass is the evidence machinery and correctness gate needed to produce the next trustworthy dataset. Exact campaign procedure and interpretation rules are in [`../benchmarks/README.md`](../benchmarks/README.md).
 
 ## Prior work and limitations
 
 Event-driven hard-sphere scheduling and invalid-event handling are established research areas; CADQ is not claimed novel. Useful references: Gerald Paul, *A Complexity O(1) Priority Queue for Event Driven Molecular Dynamics Simulations* (2007), DOI [10.1016/j.jcp.2006.06.042](https://doi.org/10.1016/j.jcp.2006.06.042); Bannerman et al., *DynamO* (2011), DOI [10.1002/jcc.21915](https://doi.org/10.1002/jcc.21915); and Johnson et al., *Reflections on Simultaneous Impact* ([paper index](https://www.cs.columbia.edu/cg/rosi/)).
 
-This pass intentionally does not yet claim spatial broad phases, bucket calendars, JMH measurements, adaptive switching, property fuzzing, CSV aggregation, or million-ball scalability. Those require measured implementations rather than placeholders. JSONL output is the current machine-readable dataset format.
+This pass intentionally does not yet claim spatial broad phases, bucket calendars, JMH measurements, adaptive switching, property fuzzing, statistically aggregated timing conclusions, or million-ball scalability. Those require measured implementations rather than placeholders. JSONL remains the primary machine-readable dataset format.
