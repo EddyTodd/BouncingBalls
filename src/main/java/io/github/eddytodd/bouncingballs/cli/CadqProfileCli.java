@@ -236,6 +236,10 @@ public final class CadqProfileCli {
         return "\"" + name + "\":" + value;
     }
 
+    private static String field(String name, double value) {
+        return "\"" + name + "\":" + Double.toString(value);
+    }
+
     private static String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
