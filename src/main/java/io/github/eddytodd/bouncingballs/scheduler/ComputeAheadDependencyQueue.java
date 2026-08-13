@@ -6,14 +6,15 @@ import java.util.*;
 /**
  * Compute-ahead dependency queue (CADQ).
  *
- * <p>Each body owns exactly one retained earliest event. Reverse links record which owners currently depend on
- * another body. When trajectories change, owners whose retained event became invalid are fully recomputed, while
- * otherwise-unaffected owners only test the changed bodies for a newly-earlier pair event. This preserves the
- * global earliest-event invariant without the previous all-owner/full-reselection safeguard.</p>
+ * <p>Each body owns its complete earliest-time tie set. Reverse links record which owners currently depend on
+ * another body. When trajectories change, owners whose retained events became invalid are fully recomputed, while
+ * otherwise-unaffected owners only test the changed bodies for newly-earlier or equal-earliest pair events. This
+ * preserves the global earliest-event and simultaneous-contact invariants without the previous all-owner/full-
+ * reselection safeguard.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
-    private final Map<Ball, CollisionEvent> outbound = new HashMap<>();
+    private final Map<Ball, List<CollisionEvent>> outbound = new HashMap<>();
     private final Map<Ball, Set<Ball>> inbound = new HashMap<>();
     private double now;
 
@@ -28,15 +29,13 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
 
     private void recompute(Ball owner, List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
         removeOutbound(owner);
-        CollisionEvent best = null;
+        List<CollisionEvent> best = new ArrayList<>();
         for (Ball other : balls) {
             if (other == owner) continue;
-            CollisionEvent candidate = EventPredictions.pair(owner, other, policy, stats, now);
-            if (candidate != null && (best == null || candidate.compareTo(best) < 0)) best = candidate;
+            consider(best, EventPredictions.pair(owner, other, policy, stats, now), policy);
         }
         for (int wall = 0; wall < 4; wall++) {
-            CollisionEvent candidate = EventPredictions.wall(owner, bounds, wall, policy, stats, now);
-            if (candidate != null && (best == null || candidate.compareTo(best) < 0)) best = candidate;
+            consider(best, EventPredictions.wall(owner, bounds, wall, policy, stats, now), policy);
         }
         install(owner, best, stats);
         stats.predictionRecomputations++;
@@ -44,41 +43,70 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     }
 
     private void refreshAgainstChanged(Ball owner, Set<Ball> changed, NumericalPolicy policy, SimulationStats stats) {
-        CollisionEvent best = outbound.get(owner);
+        List<CollisionEvent> current = outbound.get(owner);
+        List<CollisionEvent> best = current == null ? new ArrayList<>() : new ArrayList<>(current);
+        boolean modified = false;
         for (Ball other : changed) {
             if (other == owner) continue;
             CollisionEvent candidate = EventPredictions.pair(owner, other, policy, stats, now);
             stats.cadqLocalPairRefreshes++;
-            if (candidate != null && (best == null || candidate.compareTo(best) < 0)) best = candidate;
+            if (candidate == null) continue;
+            if (best.isEmpty() || earlier(candidate.time(), best.get(0).time(), policy)) {
+                best.clear();
+                best.add(candidate);
+                modified = true;
+            } else if (policy.sameTime(candidate.time(), best.get(0).time())) {
+                best.add(candidate);
+                modified = true;
+            }
         }
-        if (best != outbound.get(owner)) {
+        if (modified) {
             removeOutbound(owner);
             install(owner, best, stats);
         }
     }
 
-    private void removeOutbound(Ball owner) {
-        CollisionEvent old = outbound.remove(owner);
-        if (old == null || old.b() == null) return;
-        Set<Ball> dependents = inbound.get(old.b());
-        if (dependents == null) return;
-        dependents.remove(owner);
-        if (dependents.isEmpty()) inbound.remove(old.b());
+    private static void consider(List<CollisionEvent> best, CollisionEvent candidate, NumericalPolicy policy) {
+        if (candidate == null) return;
+        if (best.isEmpty() || earlier(candidate.time(), best.get(0).time(), policy)) {
+            best.clear();
+            best.add(candidate);
+        } else if (policy.sameTime(candidate.time(), best.get(0).time())) {
+            best.add(candidate);
+        }
     }
 
-    private void install(Ball owner, CollisionEvent event, SimulationStats stats) {
-        if (event == null) return;
-        outbound.put(owner, event);
-        queue.add(event);
-        stats.queuePushes++;
-        if (event.b() != null) inbound.computeIfAbsent(event.b(), ignored -> new HashSet<>()).add(owner);
+    private static boolean earlier(double a, double b, NumericalPolicy policy) {
+        return a < b && !policy.sameTime(a, b);
+    }
+
+    private void removeOutbound(Ball owner) {
+        List<CollisionEvent> old = outbound.remove(owner);
+        if (old == null) return;
+        for (CollisionEvent event : old) {
+            if (event.b() == null) continue;
+            Set<Ball> dependents = inbound.get(event.b());
+            if (dependents == null) continue;
+            dependents.remove(owner);
+            if (dependents.isEmpty()) inbound.remove(event.b());
+        }
+    }
+
+    private void install(Ball owner, List<CollisionEvent> events, SimulationStats stats) {
+        if (events == null || events.isEmpty()) return;
+        List<CollisionEvent> retained = List.copyOf(events);
+        outbound.put(owner, retained);
+        for (CollisionEvent event : retained) {
+            queue.add(event);
+            stats.queuePushes++;
+            if (event.b() != null) inbound.computeIfAbsent(event.b(), ignored -> new HashSet<>()).add(owner);
+        }
     }
 
     @Override
     public List<CollisionEvent> nextBatch(NumericalPolicy policy, SimulationStats stats) {
         CollisionEvent first = takeValid(stats);
         if (first == null) return List.of();
-
         List<CollisionEvent> batch = new ArrayList<>();
         batch.add(first);
         while (true) {
@@ -115,7 +143,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     }
 
     private boolean isCurrent(CollisionEvent event) {
-        return outbound.get(event.a()) == event && EventPredictions.valid(event);
+        List<CollisionEvent> retained = outbound.get(event.a());
+        if (retained == null || !EventPredictions.valid(event)) return false;
+        for (CollisionEvent current : retained) if (current == event) return true;
+        return false;
     }
 
     @Override
@@ -128,8 +159,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         // Snapshot before mutations: recompute() rewrites reverse links.
         for (Ball owner : full) recompute(owner, balls, bounds, policy, stats);
 
-        // For an owner whose previous best event did not depend on a changed body, every old prediction against
-        // unchanged bodies remains valid. Only a changed body can introduce a newly-earlier event.
+        // For an owner whose previous earliest tie set did not depend on a changed body, every old prediction
+        // against unchanged bodies remains valid. Only a changed body can introduce a newly-earlier/equal event.
         for (Ball owner : balls) {
             if (!full.contains(owner)) refreshAgainstChanged(owner, changed, policy, stats);
         }
