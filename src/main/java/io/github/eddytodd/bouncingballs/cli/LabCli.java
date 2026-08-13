@@ -1,14 +1,154 @@
 package io.github.eddytodd.bouncingballs.cli;
+
 import io.github.eddytodd.bouncingballs.core.*;
 import io.github.eddytodd.bouncingballs.resolver.*;
 import io.github.eddytodd.bouncingballs.scheduler.*;
 import java.nio.file.*;
 import java.time.*;
 import java.util.*;
-/** Command line experiment runner. All durations are simulation seconds. */
+
+/** Single-run experiment CLI. Use {@link CampaignCli} for differential/repeated research campaigns. */
 public final class LabCli {
- public static void main(String[] args) throws Exception {Map<String,String>a=parse(args);if(args.length==0||a.containsKey("help")){help();return;}if(a.containsKey("list")){System.out.println("algorithms="+Arrays.toString(SchedulerKind.values())+"\nresolvers="+Arrays.toString(ResolverKind.values())+"\nworkloads="+Arrays.toString(Workloads.Kind.values()));return;}SchedulerKind sk=SchedulerKind.valueOf(a.getOrDefault("algorithm","GLOBAL_EVENT_QUEUE").toUpperCase());ResolverKind rk=ResolverKind.valueOf(a.getOrDefault("resolver","ITERATIVE").toUpperCase());Workloads.Kind wk=Workloads.Kind.valueOf(a.getOrDefault("workload","SPARSE_UNIFORM").toUpperCase());int count=Integer.parseInt(a.getOrDefault("balls","100"));long seed=Long.parseLong(a.getOrDefault("seed","1"));double restitution=Double.parseDouble(a.getOrDefault("restitution","1"));double duration=Double.parseDouble(a.getOrDefault("duration","1"));long events=Long.parseLong(a.getOrDefault("events","100000"));Workloads.Setup setup=Workloads.create(wk,count,seed,restitution);Simulation s=new Simulation(setup.balls(),setup.bounds(),new SimulationConfig(sk,rk,NumericalPolicy.DEFAULT,Double.parseDouble(a.getOrDefault("step","0.001"))));long start=System.nanoTime();s.advance(duration,events);long elapsed=System.nanoTime()-start;String result=json(sk,rk,wk,count,seed,restitution,duration,s,elapsed);System.out.println(result);String out=a.get("out");if(out!=null)Files.writeString(Path.of(out),result+System.lineSeparator(),StandardOpenOption.CREATE,StandardOpenOption.APPEND);}
- private static Map<String,String> parse(String[] xs){Map<String,String>m=new HashMap<>();for(int i=0;i<xs.length;i++)if(xs[i].startsWith("--")){String k=xs[i].substring(2);m.put(k,i+1<xs.length&&!xs[i+1].startsWith("--")?xs[++i]:"true");}return m;}
- private static String json(SchedulerKind a,ResolverKind r,Workloads.Kind w,int n,long seed,double e,double duration,Simulation s,long nanos){SimulationStats z=s.stats();return String.format(Locale.ROOT,"{\"timestamp\":\"%s\",\"algorithm\":\"%s\",\"resolver\":\"%s\",\"workload\":\"%s\",\"balls\":%d,\"seed\":%d,\"restitution\":%.6f,\"requestedSeconds\":%.6f,\"simulatedSeconds\":%.12f,\"elapsedNanos\":%d,\"resolvedContacts\":%d,\"toiQueries\":%d,\"candidateChecks\":%d,\"queuePushes\":%d,\"queuePops\":%d,\"staleEvents\":%d,\"stalePercent\":%.4f,\"predictionRecomputations\":%d,\"dependencyInvalidations\":%d,\"cadqFullReselections\":%d,\"cadqLocalPairRefreshes\":%d,\"maxQueueSize\":%d}",Instant.now(),a,r,w,n,seed,e,duration,s.time(),nanos,z.resolvedContacts,z.toiQueries,z.candidateChecks,z.queuePushes,z.queuePops,z.staleEvents,z.stalePercent(),z.predictionRecomputations,z.dependencyInvalidations,z.cadqFullReselections,z.cadqLocalPairRefreshes,z.maxQueueSize);}
- private static void help(){System.out.println("Usage: LabCli --algorithm GLOBAL_EVENT_QUEUE --resolver ITERATIVE --workload SPARSE_UNIFORM --balls 100 --duration 1 --events 100000 --seed 1 --restitution 1 --out result.json\nUse --list to enumerate modes.");}
+    private LabCli() {}
+
+    public static void main(String[] args) throws Exception {
+        Map<String, String> options = parse(args);
+        if (args.length == 0 || options.containsKey("help")) {
+            help();
+            return;
+        }
+        if (options.containsKey("list")) {
+            System.out.println("algorithms=" + Arrays.toString(SchedulerKind.values())
+                    + "\nresolvers=" + Arrays.toString(ResolverKind.values())
+                    + "\nworkloads=" + Arrays.toString(Workloads.Kind.values()));
+            return;
+        }
+
+        SchedulerKind scheduler = SchedulerKind.valueOf(
+                options.getOrDefault("algorithm", "GLOBAL_EVENT_QUEUE").toUpperCase(Locale.ROOT));
+        ResolverKind resolver = ResolverKind.valueOf(
+                options.getOrDefault("resolver", "ITERATIVE").toUpperCase(Locale.ROOT));
+        Workloads.Kind workload = Workloads.Kind.valueOf(
+                options.getOrDefault("workload", "SPARSE_UNIFORM").toUpperCase(Locale.ROOT));
+        int requestedBalls = Integer.parseInt(options.getOrDefault("balls", "100"));
+        long seed = Long.parseLong(options.getOrDefault("seed", "1"));
+        double restitution = Double.parseDouble(options.getOrDefault("restitution", "1"));
+        double duration = Double.parseDouble(options.getOrDefault("duration", "1"));
+        long events = Long.parseLong(options.getOrDefault("events", "100000"));
+        double step = Double.parseDouble(options.getOrDefault("step", "0.001"));
+
+        long workloadStart = System.nanoTime();
+        Workloads.Setup setup = Workloads.create(workload, requestedBalls, seed, restitution);
+        long workloadGenerationNanos = System.nanoTime() - workloadStart;
+
+        long constructionStart = System.nanoTime();
+        Simulation simulation = new Simulation(
+                setup.balls(),
+                setup.bounds(),
+                new SimulationConfig(scheduler, resolver, NumericalPolicy.DEFAULT, step));
+        long constructionNanos = System.nanoTime() - constructionStart;
+
+        long advanceStart = System.nanoTime();
+        simulation.advance(duration, events);
+        long advanceNanos = System.nanoTime() - advanceStart;
+
+        String result = json(
+                scheduler,
+                resolver,
+                workload,
+                requestedBalls,
+                setup.balls().size(),
+                seed,
+                restitution,
+                duration,
+                simulation,
+                workloadGenerationNanos,
+                constructionNanos,
+                advanceNanos);
+        System.out.println(result);
+
+        String out = options.get("out");
+        if (out != null) {
+            Path path = Path.of(out).toAbsolutePath();
+            if (path.getParent() != null) Files.createDirectories(path.getParent());
+            Files.writeString(
+                    path,
+                    result + System.lineSeparator(),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND);
+        }
+    }
+
+    private static Map<String, String> parse(String[] args) {
+        Map<String, String> parsed = new HashMap<>();
+        for (int i = 0; i < args.length; i++) {
+            if (!args[i].startsWith("--")) throw new IllegalArgumentException("unexpected argument " + args[i]);
+            String key = args[i].substring(2);
+            String value = i + 1 < args.length && !args[i + 1].startsWith("--") ? args[++i] : "true";
+            parsed.put(key, value);
+        }
+        return parsed;
+    }
+
+    private static String json(
+            SchedulerKind scheduler,
+            ResolverKind resolver,
+            Workloads.Kind workload,
+            int requestedBalls,
+            int actualBalls,
+            long seed,
+            double restitution,
+            double duration,
+            Simulation simulation,
+            long workloadGenerationNanos,
+            long constructionNanos,
+            long advanceNanos) {
+        SimulationStats stats = simulation.stats();
+        long totalEngineNanos = constructionNanos + advanceNanos;
+        return String.format(
+                Locale.ROOT,
+                "{\"timestamp\":\"%s\",\"algorithm\":\"%s\",\"resolver\":\"%s\",\"workload\":\"%s\","
+                        + "\"requestedBalls\":%d,\"actualBalls\":%d,\"seed\":%d,\"restitution\":%.6f,"
+                        + "\"requestedSeconds\":%.6f,\"simulatedSeconds\":%.12f,"
+                        + "\"workloadGenerationNanos\":%d,\"constructionNanos\":%d,\"advanceNanos\":%d,"
+                        + "\"totalEngineNanos\":%d,\"resolvedContacts\":%d,\"toiQueries\":%d,"
+                        + "\"candidateChecks\":%d,\"queuePushes\":%d,\"queuePops\":%d,"
+                        + "\"validEvents\":%d,\"staleEvents\":%d,\"stalePercent\":%.4f,"
+                        + "\"predictionRecomputations\":%d,\"dependencyInvalidations\":%d,"
+                        + "\"cadqFullReselections\":%d,\"cadqLocalPairRefreshes\":%d,\"maxQueueSize\":%d}",
+                Instant.now(),
+                scheduler,
+                resolver,
+                workload,
+                requestedBalls,
+                actualBalls,
+                seed,
+                restitution,
+                duration,
+                simulation.time(),
+                workloadGenerationNanos,
+                constructionNanos,
+                advanceNanos,
+                totalEngineNanos,
+                stats.resolvedContacts,
+                stats.toiQueries,
+                stats.candidateChecks,
+                stats.queuePushes,
+                stats.queuePops,
+                stats.validEvents,
+                stats.staleEvents,
+                stats.stalePercent(),
+                stats.predictionRecomputations,
+                stats.dependencyInvalidations,
+                stats.cadqFullReselections,
+                stats.cadqLocalPairRefreshes,
+                stats.maxQueueSize);
+    }
+
+    private static void help() {
+        System.out.println("Usage: LabCli --algorithm GLOBAL_EVENT_QUEUE --resolver ITERATIVE "
+                + "--workload SPARSE_UNIFORM --balls 100 --duration 1 --events 100000 --seed 1 "
+                + "--restitution 1 --out result.jsonl\nUse --list to enumerate modes. "
+                + "Use CampaignCli for repeated differential campaigns.");
+    }
 }
