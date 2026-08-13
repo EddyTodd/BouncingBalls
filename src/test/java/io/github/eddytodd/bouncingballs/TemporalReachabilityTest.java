@@ -32,6 +32,20 @@ class TemporalReachabilityTest {
     }
 
     @Test
+    void cadqConstructionUsesWallHorizonToSkipExactPairToi() {
+        Bounds bounds = new Bounds(0, -100, 20, 100);
+        SimulationStats enabled = buildOnly(verticalSeparationSetup(), bounds, true);
+        SimulationStats disabled = buildOnly(verticalSeparationSetup(), bounds, false);
+
+        assertTrue(enabled.cadqTemporalBoundChecks >= 4,
+                "initial owner selections should test far pairs against their wall horizon");
+        assertTrue(enabled.cadqTemporalPrunes >= 4,
+                "initial far pairs cannot reach the moving owner before its right wall");
+        assertTrue(enabled.toiQueries < disabled.toiQueries,
+                "construction pruning must save exact TOI queries rather than only add counters");
+    }
+
+    @Test
     void cadqSkipsExactPairToiWhenWallHorizonMakesContactImpossible() {
         Bounds bounds = new Bounds(0, -100, 20, 100);
         List<Ball> balls = verticalSeparationSetup();
@@ -53,6 +67,20 @@ class TemporalReachabilityTest {
         assertEquals(0, disabled.cadqTemporalPrunes);
         assertTrue(enabled.toiQueries < disabled.toiQueries,
                 "the enabled path must save exact TOI queries rather than only adding a bookkeeping counter");
+    }
+
+    private static SimulationStats buildOnly(List<Ball> balls, Bounds bounds, boolean enabled) {
+        String previous = System.getProperty(PROPERTY);
+        try {
+            System.setProperty(PROPERTY, Boolean.toString(enabled));
+            ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
+            SimulationStats stats = new SimulationStats();
+            queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
+            return stats;
+        } finally {
+            if (previous == null) System.clearProperty(PROPERTY);
+            else System.setProperty(PROPERTY, previous);
+        }
     }
 
     private static SimulationStats updateOwnerOnce(List<Ball> balls, Bounds bounds, boolean enabled) {

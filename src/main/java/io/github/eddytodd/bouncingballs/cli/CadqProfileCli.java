@@ -23,6 +23,7 @@ public final class CadqProfileCli {
             Workloads.Kind.HIGH_VELOCITY,
             Workloads.Kind.WALL_DOMINATED,
             Workloads.Kind.ACCELERATED,
+            Workloads.Kind.DIFFERENTIAL_ACCELERATION,
             Workloads.Kind.ADVERSARIAL_INVALIDATION);
 
     private record Options(
@@ -138,6 +139,10 @@ public final class CadqProfileCli {
                 + field("cadqTemporalPrunes", stats.cadqTemporalPrunes) + ","
                 + field("cadqTemporalPrunePercent", stats.cadqTemporalPrunePercent()) + ","
                 + field("toiQueries", stats.toiQueries) + ","
+                + field("pairToiQueries", stats.pairToiQueries) + ","
+                + field("quadraticPairToiQueries", stats.quadraticPairToiQueries) + ","
+                + field("quarticPairToiQueries", stats.quarticPairToiQueries) + ","
+                + field("wallToiQueries", stats.wallToiQueries) + ","
                 + field("predictedEventMaterializations", stats.predictedEventMaterializations) + ","
                 + field("queuePushes", stats.queuePushes) + ","
                 + field("queuePops", stats.queuePops) + ","
@@ -250,7 +255,7 @@ public final class CadqProfileCli {
     }
 
     private static void help() {
-        System.out.println("Usage: CadqProfileCli --workloads SPARSE_UNIFORM,DENSE_UNIFORM --balls 100 "
+        System.out.println("Usage: CadqProfileCli --workloads SPARSE_UNIFORM,DIFFERENTIAL_ACCELERATION --balls 100 "
                 + "--seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/cadq-profile.jsonl --overwrite");
     }
 

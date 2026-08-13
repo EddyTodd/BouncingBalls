@@ -12,6 +12,12 @@ public final class SimulationStats {
             validEvents, staleEvents, resolvedContacts, zeroTimeBatches, predictionRecomputations,
             dependencyInvalidations, cadqFullReselections, cadqLocalPairRefreshes, maxQueueSize;
 
+    /**
+     * Exact TOI work by mechanism. Pair queries are quadratic when relative acceleration is exactly zero and
+     * quartic otherwise; wall trajectories remain at most quadratic under the constant-acceleration model.
+     */
+    public long pairToiQueries, quadraticPairToiQueries, quarticPairToiQueries, wallToiQueries;
+
     /** Opt-in CADQ coarse phase timings. Zero when -Dbouncingballs.cadqProfile=true is not supplied. */
     public long cadqQueueNanos, cadqDependencyDiscoveryNanos, cadqFullReselectionNanos, cadqLocalRefreshNanos;
 

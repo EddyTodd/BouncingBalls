@@ -186,8 +186,6 @@ public final class CampaignCli {
                 options.driftToleranceMultiplier);
         boolean history = sameContactHistory(measured.simulation.stats(), reference.simulation.stats());
 
-        // A scheduler is accepted only when its deduplicated physical collision history is identical to the
-        // reference and its final state remains inside the explicitly larger floating-path drift ceiling.
         return new Validation(strict, drift, history, history && drift.equivalent());
     }
 
@@ -250,7 +248,7 @@ public final class CampaignCli {
                 + field("recordType", "environment") + ","
                 + field("campaignId", campaignId) + ","
                 + field("startedAt", started.toString()) + ","
-                + field("campaignSchema", 3) + ","
+                + field("campaignSchema", 4) + ","
                 + field("commit", commitIdentity()) + ","
                 + field("cadqTemporalPruning", Boolean.parseBoolean(
                         System.getProperty("bouncingballs.cadqTemporalPruning", "true"))) + ","
@@ -339,6 +337,10 @@ public final class CampaignCli {
         json.append(',').append(field("physicalContactBatches", stats.physicalContactBatches));
         json.append(',').append(field("physicalContactHash", Long.toUnsignedString(stats.physicalContactHash)));
         json.append(',').append(field("toiQueries", stats.toiQueries));
+        json.append(',').append(field("pairToiQueries", stats.pairToiQueries));
+        json.append(',').append(field("quadraticPairToiQueries", stats.quadraticPairToiQueries));
+        json.append(',').append(field("quarticPairToiQueries", stats.quarticPairToiQueries));
+        json.append(',').append(field("wallToiQueries", stats.wallToiQueries));
         json.append(',').append(field("candidateChecks", stats.candidateChecks));
         json.append(',').append(field("predictedEventMaterializations", stats.predictedEventMaterializations));
         json.append(',').append(field("queuePushes", stats.queuePushes));

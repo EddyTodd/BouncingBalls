@@ -112,7 +112,8 @@ public final class LabCli {
                         + "\"requestedSeconds\":%.6f,\"simulatedSeconds\":%.12f,"
                         + "\"workloadGenerationNanos\":%d,\"constructionNanos\":%d,\"advanceNanos\":%d,"
                         + "\"totalEngineNanos\":%d,\"resolvedContacts\":%d,\"toiQueries\":%d,"
-                        + "\"candidateChecks\":%d,\"predictedEventMaterializations\":%d,"
+                        + "\"pairToiQueries\":%d,\"quadraticPairToiQueries\":%d,\"quarticPairToiQueries\":%d,"
+                        + "\"wallToiQueries\":%d,\"candidateChecks\":%d,\"predictedEventMaterializations\":%d,"
                         + "\"queuePushes\":%d,\"queuePops\":%d,"
                         + "\"validEvents\":%d,\"staleEvents\":%d,\"stalePercent\":%.4f,"
                         + "\"predictionRecomputations\":%d,\"dependencyInvalidations\":%d,"
@@ -135,6 +136,10 @@ public final class LabCli {
                 totalEngineNanos,
                 stats.resolvedContacts,
                 stats.toiQueries,
+                stats.pairToiQueries,
+                stats.quadraticPairToiQueries,
+                stats.quarticPairToiQueries,
+                stats.wallToiQueries,
                 stats.candidateChecks,
                 stats.predictedEventMaterializations,
                 stats.queuePushes,

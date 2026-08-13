@@ -13,7 +13,10 @@ public final class Workloads {
         NEWTON_CRADLE,
         SYMMETRIC_IMPACT,
         WALL_DOMINATED,
+        /** Uniform shared gravity; ball-ball relative acceleration cancels, so pair TOI remains quadratic. */
         ACCELERATED,
+        /** Body-specific acceleration; every generated pair has nonzero relative acceleration and quartic pair TOI. */
+        DIFFERENTIAL_ACCELERATION,
         ADVERSARIAL_INVALIDATION
     }
 
@@ -39,7 +42,7 @@ public final class Workloads {
             Vec2 position = place(kind, id, radius, random, balls, DEFAULT_BOUNDS);
             double speed = kind == Kind.HIGH_VELOCITY ? 300 : kind == Kind.WALL_DOMINATED ? 180 : 30;
             double angle = random.nextDouble() * Math.PI * 2;
-            Vec2 acceleration = kind == Kind.ACCELERATED ? new Vec2(0, -9.81) : new Vec2(0, 0);
+            Vec2 acceleration = acceleration(kind, id, count);
             balls.add(new Ball(
                     id,
                     radius,
@@ -92,6 +95,17 @@ public final class Workloads {
                 }
             }
         }
+    }
+
+    private static Vec2 acceleration(Kind kind, int id, int count) {
+        if (kind == Kind.ACCELERATED) return new Vec2(0, -9.81);
+        if (kind == Kind.DIFFERENTIAL_ACCELERATION) {
+            // Preserve a shared gravity component while assigning a bounded, deterministic, unique horizontal
+            // acceleration. For any two generated ids the x accelerations differ, so the pair polynomial is quartic.
+            double ax = 12.0 * (id + 1.0) / (count + 1.0) - 6.0;
+            return new Vec2(ax, -9.81);
+        }
+        return new Vec2(0, 0);
     }
 
     private static Setup newtonCradle(int requestedCount, double restitution) {
