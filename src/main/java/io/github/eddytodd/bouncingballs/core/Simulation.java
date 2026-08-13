@@ -21,6 +21,7 @@ public final class Simulation {
         this.config = Objects.requireNonNull(config, "config");
         this.scheduler = switch (config.scheduler()) {
             case ALL_PAIRS_CCD -> new AllPairsCcdScheduler();
+            case SWEEP_AND_PRUNE_CCD -> new SweepAndPruneCcdScheduler();
             case GLOBAL_EVENT_QUEUE -> new GlobalEventQueueScheduler();
             case COMPUTE_AHEAD_DEPENDENCY_QUEUE -> new ComputeAheadDependencyQueue();
             case DISCRETE_BASELINE -> null;
