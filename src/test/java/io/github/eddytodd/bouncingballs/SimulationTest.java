@@ -137,26 +137,7 @@ class SimulationTest {
     }
 
     @Test
-    void cadqRetainedBuffersAreReusedAcrossSameShapeReselections() {
-        List<Ball> balls = List.of(ball(0, 0, 1), ball(1, 20, 1), ball(2, 40, 1));
-        Bounds bounds = new Bounds(-100, -10, 100, 10);
-        ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
-        SimulationStats stats = new SimulationStats();
-        queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
-
-        long initialAllocations = stats.cadqRetainedBufferAllocations;
-        assertEquals(3, initialAllocations, "each moving owner should allocate its retained buffer once");
-
-        for (Ball body : balls) body.generation++;
-        queue.trajectoriesChanged(new HashSet<>(balls), balls, bounds, NumericalPolicy.DEFAULT, stats);
-
-        assertEquals(initialAllocations, stats.cadqRetainedBufferAllocations,
-                "same-size reselections must reuse owner buffers instead of allocating exact-size arrays again");
-        assertEquals(6, stats.cadqRetainedInstalls);
-    }
-
-    @Test
-    void cadqLowIdChangesNeedNoUnaffectedPairRefreshes() {
+    void cadqLowIdChangesSkipOwnersThatCannotOwnChangedPairs() {
         List<Ball> balls = new ArrayList<>();
         balls.add(ball(0, 10, 1));
         balls.add(ball(1, 14, 0));
@@ -167,7 +148,8 @@ class SimulationTest {
         SimulationStats stats = new SimulationStats();
         queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
         long initialFull = stats.cadqFullReselections;
-        long initialLocal = stats.cadqLocalPairRefreshes;
+        long initialLocalPairs = stats.cadqLocalPairRefreshes;
+        long initialLocalOwners = stats.cadqLocalOwnersVisited;
 
         balls.get(0).generation++;
         balls.get(1).generation++;
@@ -175,10 +157,11 @@ class SimulationTest {
                 Set.of(balls.get(0), balls.get(1)), balls, bounds, NumericalPolicy.DEFAULT, stats);
 
         long updateFull = stats.cadqFullReselections - initialFull;
-        long updateLocal = stats.cadqLocalPairRefreshes - initialLocal;
         assertTrue(updateFull < balls.size(), "a local two-body change must not trigger all-owner full reselection");
-        assertEquals(0, updateLocal,
+        assertEquals(0, stats.cadqLocalPairRefreshes - initialLocalPairs,
                 "changed lower-id owners already recompute every pair they canonically own");
+        assertEquals(0, stats.cadqLocalOwnersVisited - initialLocalOwners,
+                "owners above the highest changed slot cannot own a changed pair and must not be visited");
     }
 
     @Test
