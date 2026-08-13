@@ -18,7 +18,7 @@ public final class SimulationStats {
     /** CADQ mechanism counts used to interpret coarse timings without adding nested timer overhead. */
     public long cadqQueueValidationChecks, cadqDependencyBatches, cadqFullOwnersVisited,
             cadqLocalOwnersVisited, cadqLocalOwnersModified, cadqRetainedInstalls, cadqRetainedRemovals,
-            cadqInboundSets, cadqInboundClears;
+            cadqInboundSets, cadqInboundClears, cadqTemporalBoundChecks, cadqTemporalPrunes;
 
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
@@ -35,6 +35,10 @@ public final class SimulationStats {
     public double stalePercent() {
         long n = validEvents + staleEvents;
         return n == 0 ? 0 : 100.0 * staleEvents / n;
+    }
+
+    public double cadqTemporalPrunePercent() {
+        return cadqTemporalBoundChecks == 0 ? 0 : 100.0 * cadqTemporalPrunes / cadqTemporalBoundChecks;
     }
 
     /** Sum of the non-overlapping coarse CADQ scheduler phases measured during advance. */
