@@ -11,12 +11,15 @@ import java.util.*;
  * uses arrays and {@link BitSet}s instead of object-keyed hash maps/sets.</p>
  *
  * <p>A small primitive id-to-slot table avoids boxing on hot queue validation and trajectory invalidation. The heap
- * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
- * maintain reverse dependencies without allocating wrapper objects per event.</p>
+ * stores {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to maintain reverse
+ * dependencies without allocating wrapper objects per event. Reusable changed/full masks and lazy tie-set copying
+ * keep no-op local refreshes allocation-free.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
     private final SelectionBuilder selection = new SelectionBuilder();
+    private final BitSet changedSlots = new BitSet();
+    private final BitSet fullSlots = new BitSet();
     private Ball[] bodies = new Ball[0];
     private IntSlotMap slotById = new IntSlotMap(0);
     private CollisionEvent[][] outbound = new CollisionEvent[0][];
@@ -36,6 +39,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         outbound = new CollisionEvent[bodies.length][];
         outboundTargets = new int[bodies.length][];
         inbound = new BitSet[bodies.length];
+        changedSlots.clear();
+        fullSlots.clear();
         now = 0;
 
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
@@ -70,26 +75,38 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
 
     private void refreshAgainstChanged(
             int ownerSlot,
-            BitSet changedSlots,
+            BitSet changed,
             NumericalPolicy policy,
             SimulationStats stats) {
-        selection.copyFrom(outbound[ownerSlot], outboundTargets[ownerSlot]);
+        int firstChanged = changed.nextSetBit(ownerSlot + 1);
+        if (firstChanged < 0) return;
+
+        CollisionEvent[] currentEvents = outbound[ownerSlot];
+        int[] currentTargets = outboundTargets[ownerSlot];
         boolean modified = false;
         Ball owner = bodies[ownerSlot];
 
-        for (int otherSlot = changedSlots.nextSetBit(ownerSlot + 1);
+        for (int otherSlot = firstChanged;
              otherSlot >= 0;
-             otherSlot = changedSlots.nextSetBit(otherSlot + 1)) {
+             otherSlot = changed.nextSetBit(otherSlot + 1)) {
             CollisionEvent candidate = EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now);
             stats.cadqLocalPairRefreshes++;
             if (candidate == null) continue;
 
-            if (selection.size == 0 || earlier(candidate.time(), selection.events[0].time(), policy)) {
+            if (!modified) {
+                if (currentEvents == null || earlier(candidate.time(), currentEvents[0].time(), policy)) {
+                    selection.reset();
+                    selection.add(candidate, otherSlot);
+                    modified = true;
+                } else if (policy.sameTime(candidate.time(), currentEvents[0].time())) {
+                    selection.copyFrom(currentEvents, currentTargets);
+                    selection.add(candidate, otherSlot);
+                    modified = true;
+                }
+            } else if (earlier(candidate.time(), selection.events[0].time(), policy)) {
                 selection.replace(candidate, otherSlot);
-                modified = true;
             } else if (policy.sameTime(candidate.time(), selection.events[0].time())) {
                 selection.add(candidate, otherSlot);
-                modified = true;
             }
         }
 
@@ -206,7 +223,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             Bounds bounds,
             NumericalPolicy policy,
             SimulationStats stats) {
-        BitSet changedSlots = new BitSet(bodies.length);
+        changedSlots.clear();
         for (Ball body : changed) {
             int slot = slotById.get(body.id);
             if (slot < 0 || bodies[slot] != body) {
@@ -215,24 +232,25 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             changedSlots.set(slot);
         }
 
-        BitSet full = (BitSet) changedSlots.clone();
+        fullSlots.clear();
+        fullSlots.or(changedSlots);
         for (int changedSlot = changedSlots.nextSetBit(0);
              changedSlot >= 0;
              changedSlot = changedSlots.nextSetBit(changedSlot + 1)) {
             BitSet dependents = inbound[changedSlot];
-            if (dependents != null) full.or(dependents);
+            if (dependents != null) fullSlots.or(dependents);
         }
-        stats.dependencyInvalidations += full.cardinality();
+        stats.dependencyInvalidations += fullSlots.cardinality();
 
-        // Snapshot the full-reselection set before recompute mutates reverse dependencies.
-        for (int ownerSlot = full.nextSetBit(0);
+        // The full-reselection mask is complete before recompute mutates reverse dependencies.
+        for (int ownerSlot = fullSlots.nextSetBit(0);
              ownerSlot >= 0;
-             ownerSlot = full.nextSetBit(ownerSlot + 1)) {
+             ownerSlot = fullSlots.nextSetBit(ownerSlot + 1)) {
             recompute(ownerSlot, bounds, policy, stats);
         }
 
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
-            if (!full.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
+            if (!fullSlots.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
         }
         stats.maxQueueSize = Math.max(stats.maxQueueSize, queue.size());
     }
@@ -253,10 +271,6 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         }
 
         void copyFrom(CollisionEvent[] sourceEvents, int[] sourceTargets) {
-            if (sourceEvents == null) {
-                size = 0;
-                return;
-            }
             ensure(sourceEvents.length);
             System.arraycopy(sourceEvents, 0, events, 0, sourceEvents.length);
             System.arraycopy(sourceTargets, 0, targets, 0, sourceTargets.length);
