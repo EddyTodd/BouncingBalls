@@ -10,10 +10,9 @@ import java.util.*;
  * ball-ball ownership is therefore {@code ownerSlot < otherSlot}. Retained-event and reverse-dependency bookkeeping
  * uses arrays and {@link BitSet}s instead of object-keyed hash maps/sets.</p>
  *
- * <p>A small primitive id-to-slot table avoids boxing on hot queue validation and trajectory invalidation. Each owner
- * keeps reusable retained-event/target buffers so normal reselection does not allocate two exact-size arrays on every
- * install. Old heap entries still refer to immutable event objects and become stale through retained-set identity and
- * trajectory generations.</p>
+ * <p>A small primitive id-to-slot table avoids boxing on hot queue validation and trajectory invalidation. The heap
+ * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
+ * maintain reverse dependencies without allocating wrapper objects per event.</p>
  *
  * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
  * avoid the repeated {@link System#nanoTime()} calls used by the diagnostic profiler.</p>
@@ -25,7 +24,6 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     private IntSlotMap slotById = new IntSlotMap(0);
     private CollisionEvent[][] outbound = new CollisionEvent[0][];
     private int[][] outboundTargets = new int[0][];
-    private int[] outboundSizes = new int[0];
     private BitSet[] inbound = new BitSet[0];
     private double now;
     private boolean profile;
@@ -42,7 +40,6 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         queue.clear();
         outbound = new CollisionEvent[bodies.length][];
         outboundTargets = new int[bodies.length][];
-        outboundSizes = new int[bodies.length];
         inbound = new BitSet[bodies.length];
         now = 0;
 
@@ -82,7 +79,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             NumericalPolicy policy,
             SimulationStats stats) {
         stats.cadqLocalOwnersVisited++;
-        selection.copyFrom(outbound[ownerSlot], outboundTargets[ownerSlot], outboundSizes[ownerSlot]);
+        selection.copyFrom(outbound[ownerSlot], outboundTargets[ownerSlot]);
         boolean modified = false;
         Ball owner = bodies[ownerSlot];
 
@@ -123,39 +120,32 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     }
 
     private void removeOutbound(int ownerSlot, SimulationStats stats) {
-        int size = outboundSizes[ownerSlot];
-        if (size == 0) return;
-        stats.cadqRetainedRemovals++;
-
-        CollisionEvent[] events = outbound[ownerSlot];
         int[] targets = outboundTargets[ownerSlot];
-        for (int i = 0; i < size; i++) {
-            int targetSlot = targets[i];
-            if (targetSlot >= 0) {
-                BitSet dependents = inbound[targetSlot];
-                if (dependents != null) {
-                    dependents.clear(ownerSlot);
-                    stats.cadqInboundClears++;
-                }
+        if (outbound[ownerSlot] != null) stats.cadqRetainedRemovals++;
+        outbound[ownerSlot] = null;
+        outboundTargets[ownerSlot] = null;
+        if (targets == null) return;
+
+        for (int targetSlot : targets) {
+            if (targetSlot < 0) continue;
+            BitSet dependents = inbound[targetSlot];
+            if (dependents != null) {
+                dependents.clear(ownerSlot);
+                stats.cadqInboundClears++;
             }
-            events[i] = null;
-            targets[i] = -1;
         }
-        outboundSizes[ownerSlot] = 0;
     }
 
     private void install(int ownerSlot, SimulationStats stats) {
         if (selection.size == 0) return;
 
-        ensureRetainedCapacity(ownerSlot, selection.size, stats);
-        CollisionEvent[] events = outbound[ownerSlot];
-        int[] targets = outboundTargets[ownerSlot];
-        System.arraycopy(selection.events, 0, events, 0, selection.size);
-        System.arraycopy(selection.targets, 0, targets, 0, selection.size);
-        outboundSizes[ownerSlot] = selection.size;
+        CollisionEvent[] events = Arrays.copyOf(selection.events, selection.size);
+        int[] targets = Arrays.copyOf(selection.targets, selection.size);
+        outbound[ownerSlot] = events;
+        outboundTargets[ownerSlot] = targets;
         stats.cadqRetainedInstalls++;
 
-        for (int i = 0; i < selection.size; i++) {
+        for (int i = 0; i < events.length; i++) {
             queue.add(events[i]);
             stats.queuePushes++;
 
@@ -167,21 +157,6 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
                 stats.cadqInboundSets++;
             }
         }
-    }
-
-    private void ensureRetainedCapacity(int ownerSlot, int required, SimulationStats stats) {
-        CollisionEvent[] current = outbound[ownerSlot];
-        if (current != null && current.length >= required) return;
-
-        int capacity = current == null ? required : Math.max(required, current.length * 2);
-        outbound[ownerSlot] = current == null
-                ? new CollisionEvent[capacity]
-                : Arrays.copyOf(current, capacity);
-        int[] currentTargets = outboundTargets[ownerSlot];
-        outboundTargets[ownerSlot] = currentTargets == null
-                ? new int[capacity]
-                : Arrays.copyOf(currentTargets, capacity);
-        stats.cadqRetainedBufferAllocations++;
     }
 
     @Override
@@ -236,9 +211,9 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         if (ownerSlot < 0 || bodies[ownerSlot] != event.a()) return false;
 
         CollisionEvent[] retained = outbound[ownerSlot];
-        int size = outboundSizes[ownerSlot];
-        for (int i = 0; i < size; i++) {
-            if (retained[i] == event) return true;
+        if (retained == null) return false;
+        for (CollisionEvent current : retained) {
+            if (current == event) return true;
         }
         return false;
     }
@@ -282,8 +257,11 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         }
         if (profile) stats.cadqFullReselectionNanos += System.nanoTime() - fullStart;
 
+        // Canonical ownership means ownerSlot >= max(changedSlots) cannot own a pair with any changed body.
+        // Those owners have no local refresh work unless they were already selected for full recomputation above.
         long localStart = profile ? System.nanoTime() : 0;
-        for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
+        int localOwnerLimit = changedSlots.length() - 1;
+        for (int ownerSlot = 0; ownerSlot < localOwnerLimit; ownerSlot++) {
             if (!full.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
         }
         if (profile) stats.cadqLocalRefreshNanos += System.nanoTime() - localStart;
@@ -306,15 +284,15 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             size = 0;
         }
 
-        void copyFrom(CollisionEvent[] sourceEvents, int[] sourceTargets, int sourceSize) {
-            if (sourceSize == 0) {
+        void copyFrom(CollisionEvent[] sourceEvents, int[] sourceTargets) {
+            if (sourceEvents == null) {
                 size = 0;
                 return;
             }
-            ensure(sourceSize);
-            System.arraycopy(sourceEvents, 0, events, 0, sourceSize);
-            System.arraycopy(sourceTargets, 0, targets, 0, sourceSize);
-            size = sourceSize;
+            ensure(sourceEvents.length);
+            System.arraycopy(sourceEvents, 0, events, 0, sourceEvents.length);
+            System.arraycopy(sourceTargets, 0, targets, 0, sourceTargets.length);
+            size = sourceEvents.length;
         }
 
         void replace(CollisionEvent event, int targetSlot) {
