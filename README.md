@@ -65,7 +65,7 @@ Pair TOI is genuinely quartic only when **relative acceleration is nonzero**. Eq
 
 ## Differential correctness campaign
 
-`CampaignCli` regenerates the same deterministic initial state for every scheduler and uses `ALL_PAIRS_CCD` as the physical reference.
+`CampaignCli` regenerates identical deterministic initial states across its continuous validation set and uses `ALL_PAIRS_CCD` as the physical reference. The current general campaign predates SAP; SAP is covered by permanent all-pairs differential regressions and the dedicated crossover evidence described below. Generalizing reusable campaign selection is part of the next benchmark-harness work.
 
 ```bash
 mvn exec:java \
