@@ -13,6 +13,8 @@ A same-JVM campaign over eight workloads, 100/300 bodies and three seeds produce
 
 This establishes a large causal improvement over `ALL_PAIRS_CCD`, not over incremental schedulers.
 
+Evidence is preserved in Actions run `31723084150`, artifact `9190163771`.
+
 ## Evidence against GLOBAL and CADQ
 
 A second experiment used all-pairs only as the correctness oracle, then interleaved SAP separately against GLOBAL and CADQ. The population was eight workloads, 100/300 bodies, three seeds, two warmups and ten measured pairs. Two complete runs produced nearly identical conclusions.
@@ -28,6 +30,8 @@ Fresh replication factors are SAP/comparator:
 
 The 300-body SAP/CADQ result is workload dependent. Replicated total factors ranged from about 0.38 for sparse uniform and 0.59 for dense uniform to about 3.95 for clustered and 4.07 for adversarial invalidation. Wall-dominated motion was near parity.
 
+The first complete run is `31723877679`. The fresh artifact-preserved replication is run `31724018682`, artifact `9190503606`.
+
 ## Interpretation
 
 SAP and CADQ make opposite cost trades. SAP has extremely cheap initialization but rebuilds after every trajectory-changing batch. CADQ pays much more initialization cost and then performs cheaper incremental updates.
@@ -35,6 +39,8 @@ SAP and CADQ make opposite cost trades. SAP has extremely cheap initialization b
 At 0.25 simulated seconds, SAP beats GLOBAL at both tested sizes and beats CADQ at 100 bodies. At 300 bodies there is no single SAP/CADQ winner across workloads.
 
 Body count alone is therefore insufficient for scheduler selection. Density, event rate, motion model and simulation horizon materially affect the winner.
+
+Within each measured pair, alternating whether SAP executed first produced essentially unchanged aggregate factors. The two completed campaign runs did not reverse comparator-family order, so the next experiment should explicitly block or reverse that factor before stronger ranking claims.
 
 ## Next experiment
 
