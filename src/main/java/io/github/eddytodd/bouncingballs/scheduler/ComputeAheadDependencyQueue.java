@@ -6,30 +6,21 @@ import java.util.*;
 /**
  * Compute-ahead dependency queue (CADQ).
  *
- * <p>Bodies are assigned dense simulation-local slots once during rebuild, sorted by stable unique body id.
- * Canonical ball-ball ownership is therefore simply {@code ownerSlot < otherSlot}. Hot-path retained-event and
- * reverse-dependency bookkeeping uses arrays and {@link BitSet}s rather than hash maps/sets.</p>
+ * <p>Bodies receive dense simulation-local slots once during rebuild, sorted by stable unique body id. Canonical
+ * ball-ball ownership is therefore {@code ownerSlot < otherSlot}. Retained-event and reverse-dependency bookkeeping
+ * uses arrays and {@link BitSet}s instead of object-keyed hash maps/sets.</p>
  *
- * <p>Each owner retains the complete earliest-time tie set among its canonical pairs and walls. Reverse dependency
- * bitsets identify owners whose retained event set currently references a body. A trajectory change fully
- * recomputes changed owners and retained dependents; all other owners test only canonically owned changed bodies for
- * newly-earlier or equal-time events.</p>
+ * <p>A small primitive id-to-slot table avoids boxing on hot queue validation and trajectory invalidation. The heap
+ * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
+ * maintain reverse dependencies without allocating wrapper objects per event.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
-    private record RetainedEvent(CollisionEvent event, int targetSlot) {}
-
-    private record QueueEntry(int ownerSlot, RetainedEvent retained) implements Comparable<QueueEntry> {
-        @Override
-        public int compareTo(QueueEntry other) {
-            int comparison = retained.event().compareTo(other.retained.event());
-            return comparison != 0 ? comparison : Integer.compare(ownerSlot, other.ownerSlot);
-        }
-    }
-
-    private final PriorityQueue<QueueEntry> queue = new PriorityQueue<>();
-    private final IdentityHashMap<Ball, Integer> slotByBall = new IdentityHashMap<>();
+    private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
+    private final SelectionBuilder selection = new SelectionBuilder();
     private Ball[] bodies = new Ball[0];
-    private RetainedEvent[][] outbound = new RetainedEvent[0][];
+    private IntSlotMap slotById = new IntSlotMap(0);
+    private CollisionEvent[][] outbound = new CollisionEvent[0][];
+    private int[][] outboundTargets = new int[0][];
     private BitSet[] inbound = new BitSet[0];
     private double now;
 
@@ -38,11 +29,12 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         bodies = balls.toArray(Ball[]::new);
         Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
 
-        slotByBall.clear();
-        for (int slot = 0; slot < bodies.length; slot++) slotByBall.put(bodies[slot], slot);
+        slotById = new IntSlotMap(bodies.length);
+        for (int slot = 0; slot < bodies.length; slot++) slotById.put(bodies[slot].id, slot);
 
         queue.clear();
-        outbound = new RetainedEvent[bodies.length][];
+        outbound = new CollisionEvent[bodies.length][];
+        outboundTargets = new int[bodies.length][];
         inbound = new BitSet[bodies.length];
         now = 0;
 
@@ -58,19 +50,20 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             NumericalPolicy policy,
             SimulationStats stats) {
         removeOutbound(ownerSlot);
+        selection.reset();
         Ball owner = bodies[ownerSlot];
-        List<RetainedEvent> best = new ArrayList<>();
 
         for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
-            CollisionEvent candidate = EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now);
-            consider(best, candidate == null ? null : new RetainedEvent(candidate, otherSlot), policy);
+            consider(
+                    EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
+                    otherSlot,
+                    policy);
         }
         for (int wall = 0; wall < 4; wall++) {
-            CollisionEvent candidate = EventPredictions.wall(owner, bounds, wall, policy, stats, now);
-            consider(best, candidate == null ? null : new RetainedEvent(candidate, -1), policy);
+            consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
         }
 
-        install(ownerSlot, best, stats);
+        install(ownerSlot, stats);
         stats.predictionRecomputations++;
         stats.cadqFullReselections++;
     }
@@ -80,12 +73,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             BitSet changedSlots,
             NumericalPolicy policy,
             SimulationStats stats) {
-        RetainedEvent[] current = outbound[ownerSlot];
-        List<RetainedEvent> best = new ArrayList<>(current == null ? 0 : current.length + 1);
-        if (current != null) Collections.addAll(best, current);
-
+        selection.copyFrom(outbound[ownerSlot], outboundTargets[ownerSlot]);
         boolean modified = false;
         Ball owner = bodies[ownerSlot];
+
         for (int otherSlot = changedSlots.nextSetBit(ownerSlot + 1);
              otherSlot >= 0;
              otherSlot = changedSlots.nextSetBit(otherSlot + 1)) {
@@ -93,33 +84,27 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             stats.cadqLocalPairRefreshes++;
             if (candidate == null) continue;
 
-            RetainedEvent retained = new RetainedEvent(candidate, otherSlot);
-            if (best.isEmpty() || earlier(candidate.time(), best.get(0).event().time(), policy)) {
-                best.clear();
-                best.add(retained);
+            if (selection.size == 0 || earlier(candidate.time(), selection.events[0].time(), policy)) {
+                selection.replace(candidate, otherSlot);
                 modified = true;
-            } else if (policy.sameTime(candidate.time(), best.get(0).event().time())) {
-                best.add(retained);
+            } else if (policy.sameTime(candidate.time(), selection.events[0].time())) {
+                selection.add(candidate, otherSlot);
                 modified = true;
             }
         }
 
         if (modified) {
             removeOutbound(ownerSlot);
-            install(ownerSlot, best, stats);
+            install(ownerSlot, stats);
         }
     }
 
-    private static void consider(
-            List<RetainedEvent> best,
-            RetainedEvent candidate,
-            NumericalPolicy policy) {
+    private void consider(CollisionEvent candidate, int targetSlot, NumericalPolicy policy) {
         if (candidate == null) return;
-        if (best.isEmpty() || earlier(candidate.event().time(), best.get(0).event().time(), policy)) {
-            best.clear();
-            best.add(candidate);
-        } else if (policy.sameTime(candidate.event().time(), best.get(0).event().time())) {
-            best.add(candidate);
+        if (selection.size == 0 || earlier(candidate.time(), selection.events[0].time(), policy)) {
+            selection.replace(candidate, targetSlot);
+        } else if (policy.sameTime(candidate.time(), selection.events[0].time())) {
+            selection.add(candidate, targetSlot);
         }
     }
 
@@ -128,28 +113,31 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     }
 
     private void removeOutbound(int ownerSlot) {
-        RetainedEvent[] old = outbound[ownerSlot];
+        int[] targets = outboundTargets[ownerSlot];
         outbound[ownerSlot] = null;
-        if (old == null) return;
+        outboundTargets[ownerSlot] = null;
+        if (targets == null) return;
 
-        for (RetainedEvent retained : old) {
-            int targetSlot = retained.targetSlot();
+        for (int targetSlot : targets) {
             if (targetSlot < 0) continue;
             BitSet dependents = inbound[targetSlot];
             if (dependents != null) dependents.clear(ownerSlot);
         }
     }
 
-    private void install(int ownerSlot, List<RetainedEvent> events, SimulationStats stats) {
-        if (events == null || events.isEmpty()) return;
+    private void install(int ownerSlot, SimulationStats stats) {
+        if (selection.size == 0) return;
 
-        RetainedEvent[] retained = events.toArray(RetainedEvent[]::new);
-        outbound[ownerSlot] = retained;
-        for (RetainedEvent event : retained) {
-            queue.add(new QueueEntry(ownerSlot, event));
+        CollisionEvent[] events = Arrays.copyOf(selection.events, selection.size);
+        int[] targets = Arrays.copyOf(selection.targets, selection.size);
+        outbound[ownerSlot] = events;
+        outboundTargets[ownerSlot] = targets;
+
+        for (int i = 0; i < events.length; i++) {
+            queue.add(events[i]);
             stats.queuePushes++;
 
-            int targetSlot = event.targetSlot();
+            int targetSlot = targets[i];
             if (targetSlot >= 0) {
                 BitSet dependents = inbound[targetSlot];
                 if (dependents == null) inbound[targetSlot] = dependents = new BitSet(bodies.length);
@@ -160,36 +148,36 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
 
     @Override
     public List<CollisionEvent> nextBatch(NumericalPolicy policy, SimulationStats stats) {
-        QueueEntry first = takeValid(stats);
+        CollisionEvent first = takeValid(stats);
         if (first == null) return List.of();
 
         List<CollisionEvent> batch = new ArrayList<>();
-        batch.add(first.retained().event());
+        batch.add(first);
         while (true) {
-            QueueEntry next = peekValid(stats);
-            if (next == null || !policy.sameTime(first.retained().event().time(), next.retained().event().time())) break;
+            CollisionEvent next = peekValid(stats);
+            if (next == null || !policy.sameTime(first.time(), next.time())) break;
             queue.poll();
             stats.queuePops++;
             stats.validEvents++;
-            batch.add(next.retained().event());
+            batch.add(next);
         }
         return batch;
     }
 
-    private QueueEntry takeValid(SimulationStats stats) {
+    private CollisionEvent takeValid(SimulationStats stats) {
         while (!queue.isEmpty()) {
-            QueueEntry entry = queue.poll();
+            CollisionEvent event = queue.poll();
             stats.queuePops++;
-            if (isCurrent(entry)) {
+            if (isCurrent(event)) {
                 stats.validEvents++;
-                return entry;
+                return event;
             }
             stats.staleEvents++;
         }
         return null;
     }
 
-    private QueueEntry peekValid(SimulationStats stats) {
+    private CollisionEvent peekValid(SimulationStats stats) {
         while (!queue.isEmpty() && !isCurrent(queue.peek())) {
             queue.poll();
             stats.queuePops++;
@@ -198,14 +186,15 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         return queue.peek();
     }
 
-    private boolean isCurrent(QueueEntry entry) {
-        CollisionEvent event = entry.retained().event();
+    private boolean isCurrent(CollisionEvent event) {
         if (!EventPredictions.valid(event)) return false;
+        int ownerSlot = slotById.get(event.a().id);
+        if (ownerSlot < 0 || bodies[ownerSlot] != event.a()) return false;
 
-        RetainedEvent[] retained = outbound[entry.ownerSlot()];
+        CollisionEvent[] retained = outbound[ownerSlot];
         if (retained == null) return false;
-        for (RetainedEvent current : retained) {
-            if (current == entry.retained()) return true;
+        for (CollisionEvent current : retained) {
+            if (current == event) return true;
         }
         return false;
     }
@@ -219,8 +208,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             SimulationStats stats) {
         BitSet changedSlots = new BitSet(bodies.length);
         for (Ball body : changed) {
-            Integer slot = slotByBall.get(body);
-            if (slot == null) throw new IllegalStateException("trajectory change contains an unknown body");
+            int slot = slotById.get(body.id);
+            if (slot < 0 || bodies[slot] != body) {
+                throw new IllegalStateException("trajectory change contains an unknown body");
+            }
             changedSlots.set(slot);
         }
 
@@ -233,7 +224,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         }
         stats.dependencyInvalidations += full.cardinality();
 
-        // The complete full-reselection set is snapshotted before recompute mutates reverse dependencies.
+        // Snapshot the full-reselection set before recompute mutates reverse dependencies.
         for (int ownerSlot = full.nextSetBit(0);
              ownerSlot >= 0;
              ownerSlot = full.nextSetBit(ownerSlot + 1)) {
@@ -249,5 +240,99 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     @Override
     public void timeAdvanced(double dt) {
         now += dt;
+    }
+
+    /** Reused tie-set builder: candidate evaluation does not allocate per-candidate metadata wrappers. */
+    private static final class SelectionBuilder {
+        private CollisionEvent[] events = new CollisionEvent[4];
+        private int[] targets = new int[4];
+        private int size;
+
+        void reset() {
+            size = 0;
+        }
+
+        void copyFrom(CollisionEvent[] sourceEvents, int[] sourceTargets) {
+            if (sourceEvents == null) {
+                size = 0;
+                return;
+            }
+            ensure(sourceEvents.length);
+            System.arraycopy(sourceEvents, 0, events, 0, sourceEvents.length);
+            System.arraycopy(sourceTargets, 0, targets, 0, sourceTargets.length);
+            size = sourceEvents.length;
+        }
+
+        void replace(CollisionEvent event, int targetSlot) {
+            ensure(1);
+            events[0] = event;
+            targets[0] = targetSlot;
+            size = 1;
+        }
+
+        void add(CollisionEvent event, int targetSlot) {
+            ensure(size + 1);
+            events[size] = event;
+            targets[size] = targetSlot;
+            size++;
+        }
+
+        private void ensure(int required) {
+            if (required <= events.length) return;
+            int capacity = Math.max(required, events.length * 2);
+            events = Arrays.copyOf(events, capacity);
+            targets = Arrays.copyOf(targets, capacity);
+        }
+    }
+
+    /** Primitive open-addressed id-to-slot map built once per scheduler rebuild. */
+    private static final class IntSlotMap {
+        private final int[] keys;
+        private final int[] values;
+        private final boolean[] used;
+        private final int mask;
+
+        IntSlotMap(int expectedSize) {
+            int capacity = 1;
+            int target = Math.max(2, expectedSize * 2);
+            while (capacity < target) capacity <<= 1;
+            keys = new int[capacity];
+            values = new int[capacity];
+            used = new boolean[capacity];
+            mask = capacity - 1;
+        }
+
+        void put(int key, int value) {
+            int index = mix(key) & mask;
+            while (used[index]) {
+                if (keys[index] == key) {
+                    values[index] = value;
+                    return;
+                }
+                index = (index + 1) & mask;
+            }
+            used[index] = true;
+            keys[index] = key;
+            values[index] = value;
+        }
+
+        int get(int key) {
+            int index = mix(key) & mask;
+            while (used[index]) {
+                if (keys[index] == key) return values[index];
+                index = (index + 1) & mask;
+            }
+            return -1;
+        }
+
+        private static int mix(int value) {
+            int x = value;
+            x ^= x >>> 16;
+            x *= 0x7feb352d;
+            x ^= x >>> 15;
+            x *= 0x846ca68b;
+            x ^= x >>> 16;
+            return x;
+        }
     }
 }
