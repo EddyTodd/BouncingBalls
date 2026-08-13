@@ -8,9 +8,9 @@ public final class SimulationStats {
     private static final long FNV_PRIME = 0x100000001b3L;
     private static final long BATCH_MARKER = 0x9e3779b97f4a7c15L;
 
-    public long toiQueries, candidateChecks, queuePushes, queuePops, validEvents, staleEvents,
-            resolvedContacts, zeroTimeBatches, predictionRecomputations, dependencyInvalidations,
-            cadqFullReselections, cadqLocalPairRefreshes, maxQueueSize;
+    public long toiQueries, candidateChecks, predictedEventMaterializations, queuePushes, queuePops,
+            validEvents, staleEvents, resolvedContacts, zeroTimeBatches, predictionRecomputations,
+            dependencyInvalidations, cadqFullReselections, cadqLocalPairRefreshes, maxQueueSize;
 
     /** Opt-in CADQ coarse phase timings. Zero when -Dbouncingballs.cadqProfile=true is not supplied. */
     public long cadqQueueNanos, cadqDependencyDiscoveryNanos, cadqFullReselectionNanos, cadqLocalRefreshNanos;
