@@ -8,9 +8,17 @@ public final class SimulationStats {
     private static final long FNV_PRIME = 0x100000001b3L;
     private static final long BATCH_MARKER = 0x9e3779b97f4a7c15L;
 
-    public long toiQueries, candidateChecks, queuePushes, queuePops, validEvents, staleEvents,
-            resolvedContacts, zeroTimeBatches, predictionRecomputations, dependencyInvalidations,
-            cadqFullReselections, cadqLocalPairRefreshes, maxQueueSize;
+    public long toiQueries, candidateChecks, predictedEventMaterializations, queuePushes, queuePops,
+            validEvents, staleEvents, resolvedContacts, zeroTimeBatches, predictionRecomputations,
+            dependencyInvalidations, cadqFullReselections, cadqLocalPairRefreshes, maxQueueSize;
+
+    /** Opt-in CADQ coarse phase timings. Zero when -Dbouncingballs.cadqProfile=true is not supplied. */
+    public long cadqQueueNanos, cadqDependencyDiscoveryNanos, cadqFullReselectionNanos, cadqLocalRefreshNanos;
+
+    /** CADQ mechanism counts used to interpret coarse timings without adding nested timer overhead. */
+    public long cadqQueueValidationChecks, cadqDependencyBatches, cadqFullOwnersVisited,
+            cadqLocalOwnersVisited, cadqLocalOwnersModified, cadqRetainedInstalls, cadqRetainedRemovals,
+            cadqInboundSets, cadqInboundClears;
 
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
@@ -27,6 +35,11 @@ public final class SimulationStats {
     public double stalePercent() {
         long n = validEvents + staleEvents;
         return n == 0 ? 0 : 100.0 * staleEvents / n;
+    }
+
+    /** Sum of the non-overlapping coarse CADQ scheduler phases measured during advance. */
+    public long cadqProfiledAdvanceNanos() {
+        return cadqQueueNanos + cadqDependencyDiscoveryNanos + cadqFullReselectionNanos + cadqLocalRefreshNanos;
     }
 
     void observePhysicalBatch(List<Contact> contacts) {

@@ -8,7 +8,7 @@ The current campaign keeps five questions separate:
 
 1. **Physical correctness:** does a scheduler reproduce the same deduplicated physical collision history as the all-pairs reference?
 2. **Numerical reproducibility:** how far can final coordinates drift when schedulers follow the same physical collision history through different floating-point TOI/rebuild paths?
-3. **Mechanism:** how many TOI queries, queue operations, stale entries, CADQ reselections, and local refreshes occur?
+3. **Mechanism:** how many TOI queries, event materializations, queue operations, stale entries, CADQ reselections, and local refreshes occur?
 4. **Initialization cost:** how much time is spent constructing the simulation and initial scheduler state?
 5. **Advance cost:** how much wall-clock time is spent advancing the requested interval?
 
@@ -95,6 +95,21 @@ This normalization is intentional: comparing raw nanoseconds from two different 
 
 A factor below `1` favors the candidate. The script refuses to analyze a campaign whose final correctness summary did not pass.
 
+## CADQ phase profiling
+
+`CadqProfileCli` is deliberately separate from `CampaignCli`:
+
+```bash
+mvn exec:java \
+  -Dbouncingballs.commit="$(git rev-parse HEAD)" \
+  -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CadqProfileCli \
+  -Dexec.args="--balls 100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out benchmarks/results/cadq-profile.jsonl --overwrite"
+```
+
+The profiler enables coarse `System.nanoTime()` probes inside CADQ. It measures queue work, dependency discovery, full reselection, and local changed-pair refresh while also emitting mechanism counts. This is useful for **attribution**, but the probes perturb the code path. A profiler result may motivate a candidate; it cannot by itself establish that the candidate is faster.
+
+Performance acceptance therefore always returns to an **uninstrumented differential campaign** and matched CADQ/GLOBAL comparison.
+
 ## Campaign sequence and current evidence
 
 The current bounded research matrix uses:
@@ -108,7 +123,7 @@ The current bounded research matrix uses:
 - five measured repetitions;
 - one simulated second.
 
-Each execution produces 42 scenarios and 630 measured trials. The accepted canonical-ownership and dense-bookkeeping implementations both produced:
+Each execution produces 42 scenarios and 630 measured trials. Accepted implementations in the current sequence produced:
 
 - physical correctness failures: `0`;
 - execution failures: `0`;
@@ -159,12 +174,25 @@ With 20,000 deterministic bootstrap resamples, the 100-ball candidate/baseline c
 
 Construction therefore should be described as roughly parity on this evidence, not a proven win. Total and advance ratios support the dense representation for this campaign population.
 
-The accepted result was reached through two falsified intermediate ideas rather than post-hoc cleanup:
+### Advance-phase profile result
 
-1. **Dense wrappers.** The first array/`BitSet` rewrite added per-event wrapper records and boxed identity lookup. It improved portions of `advance()` but did not improve total-engine time. That design was replaced with direct heap events and primitive lookup.
-2. **Lazy refresh/reused masks.** A later micro-optimization removed no-op tie-set copies and per-batch mask allocations. Two full 630-trial runs retained correctness and improved advance-time point estimates, but neither demonstrated a reproducible total-engine improvement over the already accepted dense primitive variant. It was reverted rather than merged as an assumed optimization.
+The first 105-trial 100-ball diagnostic profile placed approximately 48% of the profiled CADQ scheduler time in full reselection and 38% in local refresh. Queue work was about 5% and dependency discovery about 4%. The four probes covered about 72% of median whole `advance()` time; the rest includes simulation/resolver work and probe effects.
 
-The raw JSONL for these research runs was preserved as GitHub Actions artifacts during the branch experiments and is intentionally not checked into the repository as a permanent machine-independent benchmark conclusion.
+That profile motivated three complete candidate experiments. All three retained physical correctness but failed the uninstrumented target-metric acceptance test:
+
+| Experimental change | 100-ball total factor (95% bootstrap) | 100-ball advance factor (95% bootstrap) | Decision |
+|---|---:|---:|---|
+| reuse retained owner buffers | 1.038 (`0.974–1.107`) | 1.000 (`0.931–1.070`) | reverted |
+| bound local-owner traversal by canonical ownership | 1.042 (`0.982–1.108`) | 1.001 (`0.942–1.067`) | reverted |
+| defer `CollisionEvent` materialization until selection | 1.033 (`0.969–1.102`) | 0.979 (`0.905–1.051`) | reverted |
+
+Every interval spans `1`, so none supports a speed claim. Mechanism improvements alone are not enough to retain extra complexity.
+
+The generic `predictedEventMaterializations` counter remains available for future allocation experiments. Detailed phase counts and interpretation are in [`../docs/CADQ_ADVANCE_PROFILE.md`](../docs/CADQ_ADVANCE_PROFILE.md).
+
+The next hypothesis should reduce candidate-selection/exact-TOI work itself, using conservative temporal or swept pruning that can prove a pair cannot beat the current owner event. A naive current-position spatial grid is not sufficient evidence of safety for future event-driven collisions.
+
+The raw JSONL for research runs is preserved as GitHub Actions artifacts during branch experiments and is intentionally not checked into the repository as a permanent machine-independent benchmark conclusion.
 
 ## Interpretation rules
 
@@ -179,6 +207,7 @@ Before making a performance claim:
 - report operation counters alongside timing;
 - include adversarial workloads even when they make the proposed optimization lose;
 - treat `maxQueueSize` as a structural memory proxy only, not measured heap allocation;
+- treat opt-in phase timings as diagnostic attribution rather than benchmark results;
 - repeat important conclusions on another machine/JVM before describing them as general.
 
-Allocation/heap profiling, cross-machine campaign orchestration, JMH/JFR integration, and hardware counters belong to later milestones or the shared benchmark infrastructure. This repository should preserve the collision-specific hypotheses, correctness semantics, and mechanism counters even if generic benchmarking machinery moves elsewhere.
+Allocation/heap profiling, cross-machine campaign orchestration, JMH/JFR integration, and hardware counters belong to later milestones or the shared benchmark infrastructure. This repository should preserve the collision-specific hypotheses, correctness semantics, mechanism counters, and falsification results even if generic benchmarking machinery moves elsewhere.

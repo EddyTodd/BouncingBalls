@@ -13,6 +13,9 @@ import java.util.*;
  * <p>A small primitive id-to-slot table avoids boxing on hot queue validation and trajectory invalidation. The heap
  * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
  * maintain reverse dependencies without allocating wrapper objects per event.</p>
+ *
+ * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
+ * avoid the repeated {@link System#nanoTime()} calls used by the diagnostic profiler.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
@@ -23,9 +26,11 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     private int[][] outboundTargets = new int[0][];
     private BitSet[] inbound = new BitSet[0];
     private double now;
+    private boolean profile;
 
     @Override
     public void rebuild(List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
+        profile = Boolean.getBoolean("bouncingballs.cadqProfile");
         bodies = balls.toArray(Ball[]::new);
         Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
 
@@ -49,7 +54,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             Bounds bounds,
             NumericalPolicy policy,
             SimulationStats stats) {
-        removeOutbound(ownerSlot);
+        removeOutbound(ownerSlot, stats);
         selection.reset();
         Ball owner = bodies[ownerSlot];
 
@@ -73,6 +78,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             BitSet changedSlots,
             NumericalPolicy policy,
             SimulationStats stats) {
+        stats.cadqLocalOwnersVisited++;
         selection.copyFrom(outbound[ownerSlot], outboundTargets[ownerSlot]);
         boolean modified = false;
         Ball owner = bodies[ownerSlot];
@@ -94,7 +100,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         }
 
         if (modified) {
-            removeOutbound(ownerSlot);
+            stats.cadqLocalOwnersModified++;
+            removeOutbound(ownerSlot, stats);
             install(ownerSlot, stats);
         }
     }
@@ -112,8 +119,9 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         return a < b && !policy.sameTime(a, b);
     }
 
-    private void removeOutbound(int ownerSlot) {
+    private void removeOutbound(int ownerSlot, SimulationStats stats) {
         int[] targets = outboundTargets[ownerSlot];
+        if (outbound[ownerSlot] != null) stats.cadqRetainedRemovals++;
         outbound[ownerSlot] = null;
         outboundTargets[ownerSlot] = null;
         if (targets == null) return;
@@ -121,7 +129,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         for (int targetSlot : targets) {
             if (targetSlot < 0) continue;
             BitSet dependents = inbound[targetSlot];
-            if (dependents != null) dependents.clear(ownerSlot);
+            if (dependents != null) {
+                dependents.clear(ownerSlot);
+                stats.cadqInboundClears++;
+            }
         }
     }
 
@@ -132,6 +143,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         int[] targets = Arrays.copyOf(selection.targets, selection.size);
         outbound[ownerSlot] = events;
         outboundTargets[ownerSlot] = targets;
+        stats.cadqRetainedInstalls++;
 
         for (int i = 0; i < events.length; i++) {
             queue.add(events[i]);
@@ -142,33 +154,39 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
                 BitSet dependents = inbound[targetSlot];
                 if (dependents == null) inbound[targetSlot] = dependents = new BitSet(bodies.length);
                 dependents.set(ownerSlot);
+                stats.cadqInboundSets++;
             }
         }
     }
 
     @Override
     public List<CollisionEvent> nextBatch(NumericalPolicy policy, SimulationStats stats) {
-        CollisionEvent first = takeValid(stats);
-        if (first == null) return List.of();
+        long started = profile ? System.nanoTime() : 0;
+        try {
+            CollisionEvent first = takeValid(stats);
+            if (first == null) return List.of();
 
-        List<CollisionEvent> batch = new ArrayList<>();
-        batch.add(first);
-        while (true) {
-            CollisionEvent next = peekValid(stats);
-            if (next == null || !policy.sameTime(first.time(), next.time())) break;
-            queue.poll();
-            stats.queuePops++;
-            stats.validEvents++;
-            batch.add(next);
+            List<CollisionEvent> batch = new ArrayList<>();
+            batch.add(first);
+            while (true) {
+                CollisionEvent next = peekValid(stats);
+                if (next == null || !policy.sameTime(first.time(), next.time())) break;
+                queue.poll();
+                stats.queuePops++;
+                stats.validEvents++;
+                batch.add(next);
+            }
+            return batch;
+        } finally {
+            if (profile) stats.cadqQueueNanos += System.nanoTime() - started;
         }
-        return batch;
     }
 
     private CollisionEvent takeValid(SimulationStats stats) {
         while (!queue.isEmpty()) {
             CollisionEvent event = queue.poll();
             stats.queuePops++;
-            if (isCurrent(event)) {
+            if (isCurrent(event, stats)) {
                 stats.validEvents++;
                 return event;
             }
@@ -178,7 +196,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     }
 
     private CollisionEvent peekValid(SimulationStats stats) {
-        while (!queue.isEmpty() && !isCurrent(queue.peek())) {
+        while (!queue.isEmpty() && !isCurrent(queue.peek(), stats)) {
             queue.poll();
             stats.queuePops++;
             stats.staleEvents++;
@@ -186,7 +204,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         return queue.peek();
     }
 
-    private boolean isCurrent(CollisionEvent event) {
+    private boolean isCurrent(CollisionEvent event, SimulationStats stats) {
+        stats.cadqQueueValidationChecks++;
         if (!EventPredictions.valid(event)) return false;
         int ownerSlot = slotById.get(event.a().id);
         if (ownerSlot < 0 || bodies[ownerSlot] != event.a()) return false;
@@ -206,6 +225,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             Bounds bounds,
             NumericalPolicy policy,
             SimulationStats stats) {
+        long dependencyStart = profile ? System.nanoTime() : 0;
         BitSet changedSlots = new BitSet(bodies.length);
         for (Ball body : changed) {
             int slot = slotById.get(body.id);
@@ -222,18 +242,27 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             BitSet dependents = inbound[changedSlot];
             if (dependents != null) full.or(dependents);
         }
-        stats.dependencyInvalidations += full.cardinality();
+        int fullOwners = full.cardinality();
+        stats.dependencyInvalidations += fullOwners;
+        stats.cadqDependencyBatches++;
+        stats.cadqFullOwnersVisited += fullOwners;
+        if (profile) stats.cadqDependencyDiscoveryNanos += System.nanoTime() - dependencyStart;
 
         // Snapshot the full-reselection set before recompute mutates reverse dependencies.
+        long fullStart = profile ? System.nanoTime() : 0;
         for (int ownerSlot = full.nextSetBit(0);
              ownerSlot >= 0;
              ownerSlot = full.nextSetBit(ownerSlot + 1)) {
             recompute(ownerSlot, bounds, policy, stats);
         }
+        if (profile) stats.cadqFullReselectionNanos += System.nanoTime() - fullStart;
 
+        long localStart = profile ? System.nanoTime() : 0;
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
             if (!full.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
         }
+        if (profile) stats.cadqLocalRefreshNanos += System.nanoTime() - localStart;
+
         stats.maxQueueSize = Math.max(stats.maxQueueSize, queue.size());
     }
 

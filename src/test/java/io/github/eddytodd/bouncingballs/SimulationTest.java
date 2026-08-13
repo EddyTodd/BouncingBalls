@@ -137,6 +137,20 @@ class SimulationTest {
     }
 
     @Test
+    void predictedEventMaterializationCounterTracksFiniteStoredPredictions() {
+        List<Ball> balls = List.of(
+                ball(0, 0, 4), ball(1, 10, 3), ball(2, 20, 2), ball(3, 30, 1));
+        Bounds bounds = new Bounds(-100, -10, 100, 10);
+        SimulationStats stats = new SimulationStats();
+        GlobalEventQueueScheduler global = new GlobalEventQueueScheduler();
+        global.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
+
+        assertEquals(6, stats.candidateChecks);
+        assertEquals(10, stats.predictedEventMaterializations,
+                "six finite pair predictions and four finite right-wall predictions should be materialized");
+    }
+
+    @Test
     void cadqLowIdChangesNeedNoUnaffectedPairRefreshes() {
         List<Ball> balls = new ArrayList<>();
         balls.add(ball(0, 10, 1));
