@@ -19,17 +19,26 @@ jobs:
       - name: Verify regression suite
         run: mvn -B test
       - name: Run bounded scheduler campaign
+        id: campaign
+        continue-on-error: true
         shell: bash
         run: |
           mkdir -p target/research
+          set +e
           mvn -B exec:java \
             -Dbouncingballs.commit="${GITHUB_SHA}" \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
             -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/campaign.jsonl --overwrite" \
-            > target/research/campaign-console.log 2>&1
+            2>&1 | tee target/research/campaign-console.log
+          exit ${PIPESTATUS[0]}
       - name: Summarize campaign
+        if: always()
         shell: bash
         run: |
+          if [ ! -f target/research/campaign.jsonl ]; then
+            echo "No campaign JSONL was produced; inspect campaign-console.log."
+            exit 0
+          fi
           python3 - <<'PY'
           import json
           import statistics
@@ -47,8 +56,7 @@ jobs:
 
           print('workload balls algorithm total_ms construct_ms advance_ms toi stale_pct max_queue')
           for key in sorted(groups):
-              rows = groups[key]
-              good = [r for r in rows if r.get('success')]
+              good = [r for r in groups[key] if r.get('success')]
               print(
                   key[0], key[1], key[2],
                   f"{statistics.median(r['totalEngineNanos'] for r in good)/1e6:.6f}",
@@ -58,16 +66,23 @@ jobs:
                   f"{statistics.median(r['stalePercent'] for r in good):.3f}",
                   f"{statistics.median(r['maxQueueSize'] for r in good):.0f}")
           PY
-      - name: Preserve raw campaign
+      - name: Preserve campaign diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dense-cadq-campaign-${{ github.sha }}
-          path: target/research/campaign.jsonl
+          path: target/research/
           if-no-files-found: error
-      - name: Enforce correctness
+      - name: Enforce campaign result
+        if: always()
         shell: bash
+        env:
+          CAMPAIGN_OUTCOME: ${{ steps.campaign.outcome }}
         run: |
+          if [ "$CAMPAIGN_OUTCOME" != "success" ]; then
+            echo "Campaign process failed; see preserved diagnostics."
+            exit 1
+          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
