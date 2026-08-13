@@ -24,7 +24,7 @@ jobs:
       - name: Run matched 100/300-body A/B
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           workloads='SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,DIFFERENTIAL_ACCELERATION,ADVERSARIAL_INVALIDATION'
           args="--workloads ${workloads} --balls 100,300 --seeds 3 --warmups 1 --repetitions 4 --duration 1 --events 100000 --out"
 
@@ -33,13 +33,22 @@ jobs:
             -Dbouncingballs.cadqWarmStartOrdering=false \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
             -Dexec.args="${args} warm-baseline-100-300.jsonl --overwrite"
+          baseline_status=$?
+          echo "baseline_status=${baseline_status}" | tee warm-status-100-300.txt
 
           mvn -q exec:java \
             -Dbouncingballs.commit="${GITHUB_SHA}" \
             -Dbouncingballs.cadqWarmStartOrdering=true \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
             -Dexec.args="${args} warm-candidate-100-300.jsonl --overwrite"
+          candidate_status=$?
+          echo "candidate_status=${candidate_status}" | tee -a warm-status-100-300.txt
 
+          if [[ ${baseline_status} -ne 0 || ${candidate_status} -ne 0 ]]; then
+            exit 1
+          fi
+
+          set -e
           for n in 100 300; do
             python3 benchmarks/compare_campaigns.py \
               warm-baseline-100-300.jsonl warm-candidate-100-300.jsonl \
@@ -106,10 +115,13 @@ jobs:
           EOF
 
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: cadq-warm-start-${{ github.sha }}
           retention-days: 90
+          if-no-files-found: warn
           path: |
             warm-*.jsonl
             warm-compare-*.txt
+            warm-status-*.txt
             warm-start-config.txt
