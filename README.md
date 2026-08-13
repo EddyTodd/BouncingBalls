@@ -41,11 +41,14 @@ Correctness is structural as well as numerical. Runs record a deterministic phys
 
 The original bounded CADQ matrix contains 42 scenarios and 630 measured trials. Accepted implementations in that population have **0 physical correctness failures and 0 execution failures**; 30 strict numerical-drift warnings remain reproducible in high-speed/wall-heavy 100-ball cases whose physical collision histories are identical. Larger campaigns are documented with their own populations rather than being mixed into that baseline.
 
-Campaign schema **4** records CADQ temporal-bound checks/prunes, event materializations, and exact TOI work split into `pairToiQueries`, `quadraticPairToiQueries`, `quarticPairToiQueries`, and `wallToiQueries`. Temporal pruning can be disabled for controlled A/B research with:
+Campaign schema **4** records CADQ temporal-bound checks/prunes, event materializations, and exact TOI work split into `pairToiQueries`, `quadraticPairToiQueries`, `quarticPairToiQueries`, and `wallToiQueries`. The accepted temporal layers can be disabled independently for controlled process-level A/B research:
 
 ```bash
 -Dbouncingballs.cadqTemporalPruning=false
+-Dbouncingballs.cadqAxisTemporalPruning=false
 ```
+
+The first disables temporal pruning entirely. The second retains the accepted historical radial/L1 proof while disabling only the newer axis-separable proof. These are JVM-startup research controls.
 
 Campaign-to-campaign timing comparisons can be reproduced without third-party Python packages:
 
@@ -67,7 +70,7 @@ See [`benchmarks/README.md`](benchmarks/README.md) for the campaign protocol and
 | `DISCRETE_BASELINE` | fixed-step overlap control | tunnels by design |
 | `ALL_PAIRS_CCD` | complete rebuild correctness reference | quadratic pair enumeration cost |
 | `GLOBAL_EVENT_QUEUE` | generation-validated global heap | stale entries and queue growth under invalidation |
-| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical ownership, dense dependency tracking, local invalidation, conservative temporal pruning | worst-case invalidation/candidate work can still approach a rebuild |
+| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical ownership, dense dependency tracking, local invalidation, conservative radial + axis temporal pruning | worst-case invalidation/candidate work can still approach a rebuild |
 
 Resolvers are `SEQUENTIAL`, deterministic pairwise impulses; `ITERATIVE`, symmetric projected Gauss-Seidel; and `DIRECT`, a coupled normal-impulse linear solve with iterative fallback for singular or negative-impulse systems.
 
@@ -90,8 +93,10 @@ CADQ has evolved through measured falsification rather than assumed optimization
 4. canonical lower-id ownership reduced each unordered ball pair to one prediction and brought CADQ TOI work close to GLOBAL;
 5. dense simulation-local slots, array-backed retained sets, `BitSet` reverse dependencies, direct heap events, and a primitive id-to-slot table reduced the remaining bookkeeping penalty;
 6. advance-phase profiling tested three smaller bookkeeping/allocation hypotheses, none of which produced a reproducible target-metric improvement, so none was retained;
-7. conservative temporal reachability then reduced exact pair work during `advance()` and produced a reproducible timing improvement;
-8. after that causal result was established, the same proof was extended to **initial owner selection**, removing much of the quadratic exact-TOI construction work at larger N.
+7. conservative radial temporal reachability reduced exact pair work during `advance()` and produced a reproducible timing improvement;
+8. after that causal result was established, the same proof was extended to **initial owner selection**, removing much of the quadratic exact-TOI construction work at larger N;
+9. a conservative swept uniform grid was then tested and **rejected**: despite 94–99% geometric exclusion at scale, it removed essentially no additional median exact TOI work and regressed total time by about 21.5%/31.5%/101.3% at 100/300/1000 bodies;
+10. the useful geometry from that failed grid was reduced to a constant-time **axis-separable temporal proof**, which rejects candidates the radial L1 bound cannot prove unreachable and produced reproducible timing improvements.
 
 The dense representation deliberately supports arbitrary unique `int` body ids: ids need not be contiguous, positive, or input-sorted. `Simulation` requires uniqueness because stable ids define canonical pair ownership.
 
@@ -115,9 +120,9 @@ That evidence motivated three experiments—reusable retained-owner buffers, can
 
 See [`docs/CADQ_ADVANCE_PROFILE.md`](docs/CADQ_ADVANCE_PROFILE.md) for the phase attribution and falsification intervals.
 
-### Conservative temporal-pruning result
+### Conservative radial temporal-pruning result
 
-`TemporalReachability` uses a conservative upper bound on relative displacement over an owner's exact event horizon. If the circles cannot possibly close their current separation by that time, CADQ skips exact pair TOI. L1 velocity/acceleration norms, numerical slack, tie-time slack, and fail-open handling make the bound conservative; it is a broad-phase proof, not a heuristic distance cutoff.
+`TemporalReachability` first used a conservative radial upper bound on relative displacement over an owner's exact event horizon. If the circles could not possibly close their current separation by that time, CADQ skipped exact pair TOI. L1 velocity/acceleration norms, numerical slack, tie-time slack, and fail-open handling made the predicate conservative rather than heuristic.
 
 The larger advance-phase replication used seven workloads, 20/100 balls, five seeds, two warmups, and ten measured repetitions. Enabled and disabled campaigns each produced **2,100 measured trials with zero physical correctness failures and zero execution failures**. At 100 balls, median exact TOI work changed from `7,556` to `6,754` (**-10.6%**) and normalized `advance()` improved about **25.2%** with factor interval `0.724–0.772`.
 
@@ -142,7 +147,23 @@ That is approximately **26.3%, 43.5%, and 56.2% lower normalized construction co
 
 The first attempt at this scale campaign was discarded: the master checkout had not been compiled and `tee` masked the Maven failure because the workflow lacked `pipefail`. The hardened rerun compiled both checkouts, used `set -o pipefail`, required all four expected JSONL files, and is the only scale run used for the result above.
 
-See [`docs/CADQ_TEMPORAL_PRUNING.md`](docs/CADQ_TEMPORAL_PRUNING.md) for the proof, advance acceptance, construction-scaling evidence, artifact provenance, and next hypotheses.
+### Swept-grid falsification and accepted axis proof
+
+A conservative horizon-aware uniform grid was tested next. It was physically safe and reported striking geometric exclusion—roughly 94–99% in representative 100–1000-body probes—but median exact TOI work stayed unchanged because the existing temporal bound already rejected essentially the same candidates. The index therefore only added rebuild, cell traversal, collection, and sorting cost.
+
+Normalized total-engine factors for spatial-on versus temporal-only were **1.215 at 100**, **1.315 at 300**, and **2.013 at 1000**. The grid was rejected and removed. See [`docs/CADQ_SPATIAL_PRUNING_FALSIFICATION.md`](docs/CADQ_SPATIAL_PRUNING_FALSIFICATION.md).
+
+The follow-on axis proof adds no data structure. Contact by horizon `h` requires each coordinate gap individually to be closable:
+
+`|dx0| <= R + |dvx|h + 0.5|dax|h^2`
+
+and the analogous Y inequality. If either fails, collision is impossible. The axis predicate runs before the radial predicate and fails open under ambiguous numerical state.
+
+Across the first 100/300-body A/B, median exact TOI fell **41.3% / 49.0%** and normalized total engine improved **22.1% / 25.3%**. A second complete process run independently reproduced the timing win. At 1000 bodies, the first run had a wide total interval but the replication supported total, construction, and advance improvement; the population remains only six matched observations per run and is treated as scale evidence.
+
+For the genuine quartic `DIFFERENTIAL_ACCELERATION` workload, median quartic pair solves fell **57.0% at 100**, **59.9% at 300**, and **61.6% at 1000**.
+
+See [`docs/CADQ_AXIS_TEMPORAL_PRUNING.md`](docs/CADQ_AXIS_TEMPORAL_PRUNING.md) for the proof, both A/B runs, artifact provenance, and interpretation.
 
 ## Motion model
 

@@ -32,6 +32,50 @@ class TemporalReachabilityTest {
     }
 
     @Test
+    void axisBoundRejectsCrossAxisMotionThatRadialL1BoundAdmits() {
+        Ball a = ball(0, 0, 0, 100, 0, 0, 0);
+        Ball b = ball(1, 5, 100, 0, 0, 0, 0);
+        double horizon = 1.0;
+
+        assertTrue(TemporalReachability.couldContactWithinRadial(a, b, horizon, NumericalPolicy.DEFAULT),
+                "large X motion makes the scalar L1 displacement look sufficient");
+        assertFalse(TemporalReachability.couldContactWithinAxes(a, b, horizon, NumericalPolicy.DEFAULT),
+                "no Y motion can close the 100-unit Y gap");
+        assertFalse(TemporalReachability.couldContactWithin(a, b, horizon, NumericalPolicy.DEFAULT));
+    }
+
+    @Test
+    void axisBoundNeverRejectsRandomExactCollisionAtItsToi() {
+        Random random = new Random(0x41a15L);
+        int exactContacts = 0;
+        for (int sample = 0; sample < 2_000; sample++) {
+            Ball a = ball(
+                    0,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 40 - 20,
+                    random.nextDouble() * 40 - 20);
+            Ball b = ball(
+                    1,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 200 - 100,
+                    random.nextDouble() * 40 - 20,
+                    random.nextDouble() * 40 - 20);
+            double exact = TimeOfImpact.ballBall(a, b, NumericalPolicy.DEFAULT);
+            if (!Double.isFinite(exact) || exact > 5.0) continue;
+            exactContacts++;
+            assertTrue(
+                    TemporalReachability.couldContactWithinAxes(a, b, exact, NumericalPolicy.DEFAULT),
+                    "axis proof rejected sample " + sample + " at exact TOI " + exact);
+        }
+        assertTrue(exactContacts > 20, "random safety test should exercise actual finite contacts");
+    }
+
+    @Test
     void cadqConstructionUsesWallHorizonToSkipExactPairToi() {
         Bounds bounds = new Bounds(0, -100, 20, 100);
         SimulationStats enabled = buildOnly(verticalSeparationSetup(), bounds, true);
