@@ -6,80 +6,119 @@ import java.util.*;
 /**
  * Compute-ahead dependency queue (CADQ).
  *
- * <p>Each physical ball-ball pair is owned exactly once by the lower-id body. An owner retains the complete
- * earliest-time tie set among its canonical pairs and walls. Reverse links record which owners currently depend on
- * another body's trajectory. When trajectories change, invalidated owners are fully recomputed while otherwise
- * unaffected owners test only changed bodies for canonically owned newly-earlier/equal events.</p>
+ * <p>Bodies are assigned dense simulation-local slots once during rebuild, sorted by stable unique body id.
+ * Canonical ball-ball ownership is therefore simply {@code ownerSlot < otherSlot}. Hot-path retained-event and
+ * reverse-dependency bookkeeping uses arrays and {@link BitSet}s rather than hash maps/sets.</p>
  *
- * <p>Canonical pair ownership is not merely a duplicate-removal optimization. If a non-retained event owned by
- * body A is later than A's retained event, A's trajectory must change before that later event can occur, so the
- * omitted prediction will be recomputed first. This preserves the compute-ahead invariant while evaluating every
- * unordered pair only once per full selection instead of once from each endpoint.</p>
+ * <p>Each owner retains the complete earliest-time tie set among its canonical pairs and walls. Reverse dependency
+ * bitsets identify owners whose retained event set currently references a body. A trajectory change fully
+ * recomputes changed owners and retained dependents; all other owners test only canonically owned changed bodies for
+ * newly-earlier or equal-time events.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
-    private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
-    private final Map<Ball, List<CollisionEvent>> outbound = new HashMap<>();
-    private final Map<Ball, Set<Ball>> inbound = new HashMap<>();
+    private record RetainedEvent(CollisionEvent event, int targetSlot) {}
+
+    private record QueueEntry(int ownerSlot, RetainedEvent retained) implements Comparable<QueueEntry> {
+        @Override
+        public int compareTo(QueueEntry other) {
+            int comparison = retained.event().compareTo(other.retained.event());
+            return comparison != 0 ? comparison : Integer.compare(ownerSlot, other.ownerSlot);
+        }
+    }
+
+    private final PriorityQueue<QueueEntry> queue = new PriorityQueue<>();
+    private final IdentityHashMap<Ball, Integer> slotByBall = new IdentityHashMap<>();
+    private Ball[] bodies = new Ball[0];
+    private RetainedEvent[][] outbound = new RetainedEvent[0][];
+    private BitSet[] inbound = new BitSet[0];
     private double now;
 
     @Override
     public void rebuild(List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
+        bodies = balls.toArray(Ball[]::new);
+        Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
+
+        slotByBall.clear();
+        for (int slot = 0; slot < bodies.length; slot++) slotByBall.put(bodies[slot], slot);
+
         queue.clear();
-        outbound.clear();
-        inbound.clear();
-        for (Ball owner : balls) recompute(owner, balls, bounds, policy, stats);
+        outbound = new RetainedEvent[bodies.length][];
+        inbound = new BitSet[bodies.length];
+        now = 0;
+
+        for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
+            recompute(ownerSlot, bounds, policy, stats);
+        }
         stats.maxQueueSize = Math.max(stats.maxQueueSize, queue.size());
     }
 
-    private void recompute(Ball owner, List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
-        removeOutbound(owner);
-        List<CollisionEvent> best = new ArrayList<>();
-        for (Ball other : balls) {
-            if (!ownsPair(owner, other)) continue;
-            consider(best, EventPredictions.pair(owner, other, policy, stats, now), policy);
+    private void recompute(
+            int ownerSlot,
+            Bounds bounds,
+            NumericalPolicy policy,
+            SimulationStats stats) {
+        removeOutbound(ownerSlot);
+        Ball owner = bodies[ownerSlot];
+        List<RetainedEvent> best = new ArrayList<>();
+
+        for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
+            CollisionEvent candidate = EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now);
+            consider(best, candidate == null ? null : new RetainedEvent(candidate, otherSlot), policy);
         }
         for (int wall = 0; wall < 4; wall++) {
-            consider(best, EventPredictions.wall(owner, bounds, wall, policy, stats, now), policy);
+            CollisionEvent candidate = EventPredictions.wall(owner, bounds, wall, policy, stats, now);
+            consider(best, candidate == null ? null : new RetainedEvent(candidate, -1), policy);
         }
-        install(owner, best, stats);
+
+        install(ownerSlot, best, stats);
         stats.predictionRecomputations++;
         stats.cadqFullReselections++;
     }
 
-    private void refreshAgainstChanged(Ball owner, Set<Ball> changed, NumericalPolicy policy, SimulationStats stats) {
-        List<CollisionEvent> current = outbound.get(owner);
-        List<CollisionEvent> best = current == null ? new ArrayList<>() : new ArrayList<>(current);
+    private void refreshAgainstChanged(
+            int ownerSlot,
+            BitSet changedSlots,
+            NumericalPolicy policy,
+            SimulationStats stats) {
+        RetainedEvent[] current = outbound[ownerSlot];
+        List<RetainedEvent> best = new ArrayList<>(current == null ? 0 : current.length + 1);
+        if (current != null) Collections.addAll(best, current);
+
         boolean modified = false;
-        for (Ball other : changed) {
-            if (!ownsPair(owner, other)) continue;
-            CollisionEvent candidate = EventPredictions.pair(owner, other, policy, stats, now);
+        Ball owner = bodies[ownerSlot];
+        for (int otherSlot = changedSlots.nextSetBit(ownerSlot + 1);
+             otherSlot >= 0;
+             otherSlot = changedSlots.nextSetBit(otherSlot + 1)) {
+            CollisionEvent candidate = EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now);
             stats.cadqLocalPairRefreshes++;
             if (candidate == null) continue;
-            if (best.isEmpty() || earlier(candidate.time(), best.get(0).time(), policy)) {
+
+            RetainedEvent retained = new RetainedEvent(candidate, otherSlot);
+            if (best.isEmpty() || earlier(candidate.time(), best.get(0).event().time(), policy)) {
                 best.clear();
-                best.add(candidate);
+                best.add(retained);
                 modified = true;
-            } else if (policy.sameTime(candidate.time(), best.get(0).time())) {
-                best.add(candidate);
+            } else if (policy.sameTime(candidate.time(), best.get(0).event().time())) {
+                best.add(retained);
                 modified = true;
             }
         }
+
         if (modified) {
-            removeOutbound(owner);
-            install(owner, best, stats);
+            removeOutbound(ownerSlot);
+            install(ownerSlot, best, stats);
         }
     }
 
-    private static boolean ownsPair(Ball owner, Ball other) {
-        return other != owner && owner.id < other.id;
-    }
-
-    private static void consider(List<CollisionEvent> best, CollisionEvent candidate, NumericalPolicy policy) {
+    private static void consider(
+            List<RetainedEvent> best,
+            RetainedEvent candidate,
+            NumericalPolicy policy) {
         if (candidate == null) return;
-        if (best.isEmpty() || earlier(candidate.time(), best.get(0).time(), policy)) {
+        if (best.isEmpty() || earlier(candidate.event().time(), best.get(0).event().time(), policy)) {
             best.clear();
             best.add(candidate);
-        } else if (policy.sameTime(candidate.time(), best.get(0).time())) {
+        } else if (policy.sameTime(candidate.event().time(), best.get(0).event().time())) {
             best.add(candidate);
         }
     }
@@ -88,60 +127,69 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         return a < b && !policy.sameTime(a, b);
     }
 
-    private void removeOutbound(Ball owner) {
-        List<CollisionEvent> old = outbound.remove(owner);
+    private void removeOutbound(int ownerSlot) {
+        RetainedEvent[] old = outbound[ownerSlot];
+        outbound[ownerSlot] = null;
         if (old == null) return;
-        for (CollisionEvent event : old) {
-            if (event.b() == null) continue;
-            Set<Ball> dependents = inbound.get(event.b());
-            if (dependents == null) continue;
-            dependents.remove(owner);
-            if (dependents.isEmpty()) inbound.remove(event.b());
+
+        for (RetainedEvent retained : old) {
+            int targetSlot = retained.targetSlot();
+            if (targetSlot < 0) continue;
+            BitSet dependents = inbound[targetSlot];
+            if (dependents != null) dependents.clear(ownerSlot);
         }
     }
 
-    private void install(Ball owner, List<CollisionEvent> events, SimulationStats stats) {
+    private void install(int ownerSlot, List<RetainedEvent> events, SimulationStats stats) {
         if (events == null || events.isEmpty()) return;
-        List<CollisionEvent> retained = List.copyOf(events);
-        outbound.put(owner, retained);
-        for (CollisionEvent event : retained) {
-            queue.add(event);
+
+        RetainedEvent[] retained = events.toArray(RetainedEvent[]::new);
+        outbound[ownerSlot] = retained;
+        for (RetainedEvent event : retained) {
+            queue.add(new QueueEntry(ownerSlot, event));
             stats.queuePushes++;
-            if (event.b() != null) inbound.computeIfAbsent(event.b(), ignored -> new HashSet<>()).add(owner);
+
+            int targetSlot = event.targetSlot();
+            if (targetSlot >= 0) {
+                BitSet dependents = inbound[targetSlot];
+                if (dependents == null) inbound[targetSlot] = dependents = new BitSet(bodies.length);
+                dependents.set(ownerSlot);
+            }
         }
     }
 
     @Override
     public List<CollisionEvent> nextBatch(NumericalPolicy policy, SimulationStats stats) {
-        CollisionEvent first = takeValid(stats);
+        QueueEntry first = takeValid(stats);
         if (first == null) return List.of();
+
         List<CollisionEvent> batch = new ArrayList<>();
-        batch.add(first);
+        batch.add(first.retained().event());
         while (true) {
-            CollisionEvent next = peekValid(stats);
-            if (next == null || !policy.sameTime(first.time(), next.time())) break;
+            QueueEntry next = peekValid(stats);
+            if (next == null || !policy.sameTime(first.retained().event().time(), next.retained().event().time())) break;
             queue.poll();
             stats.queuePops++;
             stats.validEvents++;
-            batch.add(next);
+            batch.add(next.retained().event());
         }
         return batch;
     }
 
-    private CollisionEvent takeValid(SimulationStats stats) {
+    private QueueEntry takeValid(SimulationStats stats) {
         while (!queue.isEmpty()) {
-            CollisionEvent event = queue.poll();
+            QueueEntry entry = queue.poll();
             stats.queuePops++;
-            if (isCurrent(event)) {
+            if (isCurrent(entry)) {
                 stats.validEvents++;
-                return event;
+                return entry;
             }
             stats.staleEvents++;
         }
         return null;
     }
 
-    private CollisionEvent peekValid(SimulationStats stats) {
+    private QueueEntry peekValid(SimulationStats stats) {
         while (!queue.isEmpty() && !isCurrent(queue.peek())) {
             queue.poll();
             stats.queuePops++;
@@ -150,27 +198,50 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         return queue.peek();
     }
 
-    private boolean isCurrent(CollisionEvent event) {
-        List<CollisionEvent> retained = outbound.get(event.a());
-        if (retained == null || !EventPredictions.valid(event)) return false;
-        for (CollisionEvent current : retained) if (current == event) return true;
+    private boolean isCurrent(QueueEntry entry) {
+        CollisionEvent event = entry.retained().event();
+        if (!EventPredictions.valid(event)) return false;
+
+        RetainedEvent[] retained = outbound[entry.ownerSlot()];
+        if (retained == null) return false;
+        for (RetainedEvent current : retained) {
+            if (current == entry.retained()) return true;
+        }
         return false;
     }
 
     @Override
-    public void trajectoriesChanged(Set<Ball> changed, List<Ball> balls, Bounds bounds,
-                                    NumericalPolicy policy, SimulationStats stats) {
-        Set<Ball> full = new HashSet<>(changed);
-        for (Ball body : changed) full.addAll(inbound.getOrDefault(body, Set.of()));
-        stats.dependencyInvalidations += full.size();
+    public void trajectoriesChanged(
+            Set<Ball> changed,
+            List<Ball> balls,
+            Bounds bounds,
+            NumericalPolicy policy,
+            SimulationStats stats) {
+        BitSet changedSlots = new BitSet(bodies.length);
+        for (Ball body : changed) {
+            Integer slot = slotByBall.get(body);
+            if (slot == null) throw new IllegalStateException("trajectory change contains an unknown body");
+            changedSlots.set(slot);
+        }
 
-        // Snapshot before mutations: recompute() rewrites reverse links.
-        for (Ball owner : full) recompute(owner, balls, bounds, policy, stats);
+        BitSet full = (BitSet) changedSlots.clone();
+        for (int changedSlot = changedSlots.nextSetBit(0);
+             changedSlot >= 0;
+             changedSlot = changedSlots.nextSetBit(changedSlot + 1)) {
+            BitSet dependents = inbound[changedSlot];
+            if (dependents != null) full.or(dependents);
+        }
+        stats.dependencyInvalidations += full.cardinality();
 
-        // If an unaffected owner did not retain a dependency on a changed body, all of its predictions against
-        // unchanged bodies remain valid. Only canonically owned pairs with changed bodies can become newly earlier.
-        for (Ball owner : balls) {
-            if (!full.contains(owner)) refreshAgainstChanged(owner, changed, policy, stats);
+        // The complete full-reselection set is snapshotted before recompute mutates reverse dependencies.
+        for (int ownerSlot = full.nextSetBit(0);
+             ownerSlot >= 0;
+             ownerSlot = full.nextSetBit(ownerSlot + 1)) {
+            recompute(ownerSlot, bounds, policy, stats);
+        }
+
+        for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
+            if (!full.get(ownerSlot)) refreshAgainstChanged(ownerSlot, changedSlots, policy, stats);
         }
         stats.maxQueueSize = Math.max(stats.maxQueueSize, queue.size());
     }
