@@ -137,6 +137,25 @@ class SimulationTest {
     }
 
     @Test
+    void cadqRetainedBuffersAreReusedAcrossSameShapeReselections() {
+        List<Ball> balls = List.of(ball(0, 0, 1), ball(1, 20, 1), ball(2, 40, 1));
+        Bounds bounds = new Bounds(-100, -10, 100, 10);
+        ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
+        SimulationStats stats = new SimulationStats();
+        queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
+
+        long initialAllocations = stats.cadqRetainedBufferAllocations;
+        assertEquals(3, initialAllocations, "each moving owner should allocate its retained buffer once");
+
+        for (Ball body : balls) body.generation++;
+        queue.trajectoriesChanged(new HashSet<>(balls), balls, bounds, NumericalPolicy.DEFAULT, stats);
+
+        assertEquals(initialAllocations, stats.cadqRetainedBufferAllocations,
+                "same-size reselections must reuse owner buffers instead of allocating exact-size arrays again");
+        assertEquals(6, stats.cadqRetainedInstalls);
+    }
+
+    @Test
     void cadqLowIdChangesNeedNoUnaffectedPairRefreshes() {
         List<Ball> balls = new ArrayList<>();
         balls.add(ball(0, 10, 1));
