@@ -76,9 +76,28 @@ The Maven exec entry point is deliberately property-backed in `pom.xml`; `-Dexec
 
 The output begins with an `environment` record containing JVM/OS/CPU-count/heap metadata and campaign configuration, followed by reference/trial records and a final summary.
 
-## Current bounded campaign result
+## Comparing two campaigns
 
-The first post-optimization hosted campaign used:
+`compare_campaigns.py` provides the repository's reproducible comparison used for optimization decisions:
+
+```bash
+python3 benchmarks/compare_campaigns.py \
+  benchmarks/results/baseline.jsonl \
+  benchmarks/results/candidate.jsonl \
+  --balls 100 \
+  --bootstrap 20000 \
+  --seed 42
+```
+
+For every `(workload, requestedBalls, seed, repetition)` shared by the files, the script first calculates the within-campaign `CADQ / GLOBAL` ratio. It then compares candidate and baseline ratios on the exact matched keys. The reported candidate-vs-baseline factor is the geometric mean of the log-ratio changes, with a deterministic non-parametric bootstrap interval.
+
+This normalization is intentional: comparing raw nanoseconds from two different hosted runners is weaker because machine placement, JVM state, and ambient load can differ. Pairing against GLOBAL inside each campaign removes a large shared component of that noise. It does not remove all noise, so important claims still need replication.
+
+A factor below `1` favors the candidate. The script refuses to analyze a campaign whose final correctness summary did not pass.
+
+## Campaign sequence and current evidence
+
+The current bounded research matrix uses:
 
 - Ubuntu 24.04 GitHub-hosted runner;
 - Temurin Java 17;
@@ -89,14 +108,16 @@ The first post-optimization hosted campaign used:
 - five measured repetitions;
 - one simulated second.
 
-It produced 42 scenarios and 630 measured trials. After canonical CADQ pair ownership:
+Each execution produces 42 scenarios and 630 measured trials. The accepted canonical-ownership and dense-bookkeeping implementations both produced:
 
 - physical correctness failures: `0`;
 - execution failures: `0`;
 - strict numerical-drift warnings: `30`;
 - campaign passed: `true`.
 
-Representative deterministic 100-ball operation counts:
+### Canonical pair-ownership mechanism result
+
+Representative deterministic 100-ball operation counts after canonical pair ownership:
 
 | Workload | CADQ TOI | Global TOI | CADQ max queue | Global max queue |
 |---|---:|---:|---:|---:|
@@ -107,9 +128,43 @@ Representative deterministic 100-ball operation counts:
 | Wall dominated | 11,841 | 11,530 | 124 | 329 |
 | Adversarial invalidation | 7,556 | 7,204 | 117 | 297 |
 
-These counts show that canonical ownership eliminated the earlier near-2x CADQ pair-prediction duplication. The final campaign still found CADQ generally slower than GLOBAL on this runner despite similar TOI work, which shifts the next hypothesis toward bookkeeping/data-structure overhead rather than collision mathematics.
+These counts show that canonical ownership eliminated the earlier near-2x CADQ pair-prediction duplication. Because CADQ was still slower than GLOBAL despite similar TOI work, the next hypothesis became bookkeeping/data-structure overhead.
 
-The raw campaign was preserved as a GitHub Actions artifact during the research branch run. It is intentionally not checked into the repository as a permanent benchmark conclusion.
+### Dense-bookkeeping experiment
+
+The accepted dense version replaces hot object-keyed bookkeeping with:
+
+- a body array sorted once by stable unique id;
+- dense simulation-local owner slots;
+- array-backed retained event/tie sets;
+- `BitSet` reverse-dependency sets;
+- direct `CollisionEvent` heap entries;
+- a primitive open-addressed id-to-slot table.
+
+The implementation does **not** require ids themselves to be dense: regression coverage uses negative, sparse, and input-unsorted ids.
+
+Using `compare_campaigns.py` semantics on the 105 matched 100-ball observations gives:
+
+| Metric | Canonical CADQ/GLOBAL | Dense CADQ/GLOBAL | Candidate/baseline factor | Relative change |
+|---|---:|---:|---:|---:|
+| `totalEngineNanos` | 1.1477 | 1.0588 | 0.9225 | **-7.7%** |
+| `constructionNanos` | 1.0328 | 0.9903 | 0.9589 | -4.1% |
+| `advanceNanos` | 1.3539 | 1.2228 | 0.9032 | **-9.7%** |
+
+With 20,000 deterministic bootstrap resamples, the 100-ball candidate/baseline confidence intervals were approximately:
+
+- total engine: `0.869–0.978`;
+- construction: `0.884–1.037`;
+- advance: `0.855–0.954`.
+
+Construction therefore should be described as roughly parity on this evidence, not a proven win. Total and advance ratios support the dense representation for this campaign population.
+
+The accepted result was reached through two falsified intermediate ideas rather than post-hoc cleanup:
+
+1. **Dense wrappers.** The first array/`BitSet` rewrite added per-event wrapper records and boxed identity lookup. It improved portions of `advance()` but did not improve total-engine time. That design was replaced with direct heap events and primitive lookup.
+2. **Lazy refresh/reused masks.** A later micro-optimization removed no-op tie-set copies and per-batch mask allocations. Two full 630-trial runs retained correctness and improved advance-time point estimates, but neither demonstrated a reproducible total-engine improvement over the already accepted dense primitive variant. It was reverted rather than merged as an assumed optimization.
+
+The raw JSONL for these research runs was preserved as GitHub Actions artifacts during the branch experiments and is intentionally not checked into the repository as a permanent machine-independent benchmark conclusion.
 
 ## Interpretation rules
 
@@ -120,9 +175,10 @@ Before making a performance claim:
 - report numerical-drift warnings rather than suppressing them;
 - report workload, ball count, seed set, resolver, restitution, duration, event limit, commit, JVM, OS, and hardware context;
 - analyze construction, advance, and total engine time separately;
+- compare campaigns on matched workload/seed/repetition observations when possible;
 - report operation counters alongside timing;
 - include adversarial workloads even when they make the proposed optimization lose;
 - treat `maxQueueSize` as a structural memory proxy only, not measured heap allocation;
 - repeat important conclusions on another machine/JVM before describing them as general.
 
-Allocation/heap profiling, statistically rigorous aggregation, cross-machine campaign orchestration, JMH/JFR integration, and hardware counters belong to later milestones or the shared benchmark infrastructure. This repository should preserve the collision-specific hypotheses, correctness semantics, and mechanism counters even if generic benchmarking machinery moves elsewhere.
+Allocation/heap profiling, cross-machine campaign orchestration, JMH/JFR integration, and hardware counters belong to later milestones or the shared benchmark infrastructure. This repository should preserve the collision-specific hypotheses, correctness semantics, and mechanism counters even if generic benchmarking machinery moves elsewhere.
