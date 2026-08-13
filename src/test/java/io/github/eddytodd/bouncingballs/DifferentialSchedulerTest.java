@@ -29,12 +29,11 @@ class DifferentialSchedulerTest {
                             reference,
                             NumericalPolicy.DEFAULT,
                             STATE_TOLERANCE_MULTIPLIER);
-                    assertTrue(
-                            difference.equivalent(),
-                            () -> workload + " seed=" + seed + " scheduler=" + scheduler
-                                    + " reason=" + difference.reason()
-                                    + " maxPositionError=" + difference.maxPositionError()
-                                    + " maxVelocityError=" + difference.maxVelocityError());
+                    String message = workload + " seed=" + seed + " scheduler=" + scheduler
+                            + " reason=" + difference.reason()
+                            + " maxPositionError=" + difference.maxPositionError()
+                            + " maxVelocityError=" + difference.maxVelocityError();
+                    assertTrue(difference.equivalent(), message);
                 }
             }
         }
