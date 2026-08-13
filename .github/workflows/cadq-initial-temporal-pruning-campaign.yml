@@ -29,6 +29,10 @@ jobs:
           cache: maven
           cache-dependency-path: candidate/pom.xml
 
+      - name: Compile accepted master baseline
+        working-directory: baseline
+        run: mvn -B -DskipTests package
+
       - name: Verify candidate regression suite
         working-directory: candidate
         run: mvn -B test
@@ -36,6 +40,7 @@ jobs:
       - name: Run 100/300-ball accepted baseline
         working-directory: baseline
         run: |
+          set -o pipefail
           mkdir -p ../evidence
           mvn -B exec:java \
             -Dbouncingballs.commit="master-advance-only-pruning" \
@@ -46,6 +51,7 @@ jobs:
       - name: Run 100/300-ball construction-pruning candidate
         working-directory: candidate
         run: |
+          set -o pipefail
           mvn -B exec:java \
             -Dbouncingballs.commit="${GITHUB_SHA}-construction-pruning" \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
@@ -55,6 +61,7 @@ jobs:
       - name: Run 1000-ball accepted baseline
         working-directory: baseline
         run: |
+          set -o pipefail
           mvn -B exec:java \
             -Dbouncingballs.commit="master-advance-only-pruning" \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
@@ -64,6 +71,7 @@ jobs:
       - name: Run 1000-ball construction-pruning candidate
         working-directory: candidate
         run: |
+          set -o pipefail
           mvn -B exec:java \
             -Dbouncingballs.commit="${GITHUB_SHA}-construction-pruning" \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
@@ -73,20 +81,27 @@ jobs:
       - name: Compare matched campaigns
         working-directory: candidate
         run: |
+          set -o pipefail
           python3 benchmarks/compare_campaigns.py ../evidence/baseline-100-300.jsonl ../evidence/candidate-100-300.jsonl --balls 100 --bootstrap 20000 --seed 42 | tee ../evidence/comparison-100.txt
           python3 benchmarks/compare_campaigns.py ../evidence/baseline-100-300.jsonl ../evidence/candidate-100-300.jsonl --balls 300 --bootstrap 20000 --seed 42 | tee ../evidence/comparison-300.txt
           python3 benchmarks/compare_campaigns.py ../evidence/baseline-1000.jsonl ../evidence/candidate-1000.jsonl --balls 1000 --bootstrap 20000 --seed 42 | tee ../evidence/comparison-1000.txt
 
       - name: Summarize construction mechanism
         run: |
+          set -o pipefail
           python3 - <<'PY' | tee evidence/mechanism-summary.txt
           import json, statistics
           from pathlib import Path
 
           def trials(path):
-              return [json.loads(line) for line in Path(path).read_text().splitlines()
-                      if line.strip() and json.loads(line).get('recordType') == 'trial'
-                      and json.loads(line).get('algorithm') == 'COMPUTE_AHEAD_DEPENDENCY_QUEUE']
+              result = []
+              for line in Path(path).read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  record = json.loads(line)
+                  if record.get('recordType') == 'trial' and record.get('algorithm') == 'COMPUTE_AHEAD_DEPENDENCY_QUEUE':
+                      result.append(record)
+              return result
 
           for label, baseline_path, candidate_path, balls in (
               ('100', 'evidence/baseline-100-300.jsonl', 'evidence/candidate-100-300.jsonl', 100),
@@ -108,7 +123,14 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-          for path in Path('evidence').glob('*.jsonl'):
+          expected = {
+              'baseline-100-300.jsonl', 'candidate-100-300.jsonl',
+              'baseline-1000.jsonl', 'candidate-1000.jsonl'
+          }
+          actual = {path.name for path in Path('evidence').glob('*.jsonl')}
+          if actual != expected:
+              raise SystemExit(f'missing or unexpected campaign files: expected={expected}, actual={actual}')
+          for path in sorted(Path('evidence').glob('*.jsonl')):
               records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
               summary = next(r for r in reversed(records) if r.get('recordType') == 'summary')
               print(path.name, json.dumps(summary, sort_keys=True))
