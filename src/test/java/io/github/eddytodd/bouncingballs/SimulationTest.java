@@ -103,6 +103,26 @@ class SimulationTest {
     }
 
     @Test
+    void cadqDenseSlotsDoNotRequireDenseOrInputOrderedIds() {
+        Ball high = ball(1_000_000, 0, 1);
+        Ball low = ball(-20, 10, 0);
+        Ball middle = ball(7, 20, -1);
+        ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
+        SimulationStats stats = new SimulationStats();
+
+        queue.rebuild(
+                List.of(high, middle, low),
+                new Bounds(-100, -100, 100, 100),
+                NumericalPolicy.DEFAULT,
+                stats);
+
+        List<CollisionEvent> batch = queue.nextBatch(NumericalPolicy.DEFAULT, stats);
+        assertEquals(2, batch.size());
+        assertTrue(batch.stream().allMatch(event -> event.b() != null && event.a().id < event.b().id));
+        assertEquals(3, stats.candidateChecks, "three unordered pairs must still be queried exactly once");
+    }
+
+    @Test
     void cadqInitialSelectionQueriesEachUnorderedPairOnlyOnce() {
         List<Ball> balls = List.of(
                 ball(0, 10, 0), ball(1, 30, 0), ball(2, 50, 0), ball(3, 70, 0), ball(4, 90, 0));
