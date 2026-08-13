@@ -60,7 +60,7 @@ See [`benchmarks/README.md`](benchmarks/README.md) for the campaign protocol and
 | `DISCRETE_BASELINE` | fixed-step overlap control | tunnels by design |
 | `ALL_PAIRS_CCD` | complete rebuild correctness reference | quadratic prediction work |
 | `GLOBAL_EVENT_QUEUE` | generation-validated global heap | stale entries and queue growth under invalidation |
-| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical pair ownership, dense retained tie sets, indexed reverse dependencies, local invalidation | advance-time dependency maintenance remains measurable |
+| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical pair ownership, dense retained tie sets, indexed reverse dependencies, local invalidation | advance-time selection work remains measurable |
 
 Resolvers are `SEQUENTIAL`, deterministic pairwise impulses; `ITERATIVE`, symmetric projected Gauss-Seidel; and `DIRECT`, a coupled normal-impulse linear solve with iterative fallback for singular or negative-impulse systems.
 
@@ -72,7 +72,8 @@ CADQ has evolved through measured falsification rather than assumed optimization
 2. dependency-local invalidation removed that safeguard and preserved simultaneous-contact tie sets;
 3. the first serious campaign showed CADQ still performed almost twice as many TOI queries as the global heap;
 4. canonical lower-id ownership reduced each unordered ball pair to one prediction and brought CADQ TOI work close to GLOBAL;
-5. dense simulation-local slots, array-backed retained sets, `BitSet` reverse dependencies, direct heap events, and a primitive id-to-slot table reduced the remaining bookkeeping penalty.
+5. dense simulation-local slots, array-backed retained sets, `BitSet` reverse dependencies, direct heap events, and a primitive id-to-slot table reduced the remaining bookkeeping penalty;
+6. advance-phase profiling then tested three smaller bookkeeping/allocation hypotheses, none of which produced a reproducible target-metric improvement, so none was retained.
 
 The dense representation deliberately supports arbitrary unique `int` body ids: ids need not be contiguous, positive, or input-sorted. `Simulation` requires uniqueness because stable ids define canonical pair ownership.
 
@@ -90,9 +91,24 @@ For the 105 matched 100-ball workload/seed/repetition observations, the geometri
 
 A deterministic 20,000-resample bootstrap on the matched ratio changes places the 100-ball total-engine factor at approximately `0.869–0.978` and the advance factor at `0.855–0.954`. The result therefore supports the dense representation on this hosted-runner experiment. It does **not** establish a universal machine-independent speedup.
 
-The experiment also falsified two tempting implementation choices. A first dense version added per-event wrapper records and boxed identity lookup; it improved portions of `advance()` but failed to improve total engine time. Removing those wrappers and using direct `CollisionEvent` heap entries plus a primitive id-to-slot table produced the accepted result. A subsequent lazy-refresh/reused-mask micro-optimization improved advance-time point estimates in replication runs but did not show a reproducible total-engine benefit over the accepted dense version, so it was reverted rather than merged on intuition.
+### Advance-phase profiling and negative results
 
-CADQ still has work to do. In the accepted dense campaign its aggregate 100-ball CADQ/GLOBAL total ratio remained about **1.059**, and its advance-only ratio about **1.223**. Collision-prediction counts are already near GLOBAL, so the next investigation should isolate queue validation, reverse-dependency maintenance, owner refresh traversal, and retained-set mutation inside `advance()` before introducing a spatial broad phase.
+`CadqProfileCli` adds opt-in coarse timers and mechanism counters without changing normal benchmark behavior:
+
+```bash
+mvn exec:java \
+  -Dbouncingballs.commit="$(git rev-parse HEAD)" \
+  -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CadqProfileCli \
+  -Dexec.args="--balls 100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out benchmarks/results/cadq-profile.jsonl --overwrite"
+```
+
+Profiling uses `System.nanoTime()` probes and is therefore diagnostic attribution, not an uninstrumented performance benchmark. In the first 105-trial 100-ball profile, full reselection plus local changed-pair refresh accounted for roughly **86% of the profiled scheduler regions**, while queue validation plus dependency discovery accounted for only about **8%**.
+
+That evidence motivated three concrete experiments: reusable retained-owner buffers, canonical bounds on local-owner traversal, and deferred `CollisionEvent` materialization. All three preserved physical correctness across complete 630-trial campaigns, but their matched 100-ball bootstrap intervals for total and advance time all crossed `1`. They were reverted rather than merged as assumed optimizations.
+
+The current scheduler therefore remains the accepted dense implementation. The profiler and mechanism counters remain because the negative results changed the next hypothesis: further queue/object micro-optimization is not justified by the evidence. The next meaningful experiment should reduce **candidate-selection / exact TOI work** itself, preferably through a conservative temporal or swept broad phase that can prove an ignored pair cannot beat the owner's current earliest event.
+
+See [`docs/CADQ_ADVANCE_PROFILE.md`](docs/CADQ_ADVANCE_PROFILE.md) for phase numbers, falsification intervals, and the next temporal-pruning hypothesis.
 
 The motion model is exact constant velocity or constant acceleration between trajectory changes. Constant-acceleration circle contact is quartic in time; the implementation isolates real roots by recursively partitioning at derivative roots and bisecting rather than relying on a fragile closed-form quartic implementation.
 
@@ -104,10 +120,10 @@ Public API: create `Ball`s with unique ids, construct `Simulation(balls, bounds,
 - `scheduler` — CCD scheduling strategies
 - `resolver` — simultaneous-island strategies
 - `research` — canonical differential state oracle
-- `cli` — seeded workloads, single-run experiments, and campaign runner
+- `cli` — seeded workloads, single-run experiments, differential campaigns, and opt-in CADQ profiling
 - `benchmarks` — empirical protocol and paired campaign comparison; machine-local raw results are ignored by Git
 - `demo` — optional Swing state consumer
 - `legacy` — preserved 2022 implementation
-- `docs` — methodology, invariants, evidence, and limitations
+- `docs` — methodology, invariants, evidence, falsification logs, and limitations
 
 This is deliberately balls-only: no rotation, friction, polygons, or 3D. Those extensions should not obscure the current objective of understanding and empirically improving collision scheduling.
