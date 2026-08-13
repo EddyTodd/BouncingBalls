@@ -8,4 +8,18 @@ jobs:
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: '17', cache: maven }
       - run: mvn -B test
-      - run: python3 -m py_compile benchmarks/compare_campaigns.py
+      - run: python3 -m py_compile benchmarks/compare_campaigns.py benchmarks/summarize_lower_bound_probe.py
+      - name: Run lower-bound mechanism sweep
+        if: github.ref == 'refs/heads/agent/cadq-lower-bound-probe'
+        run: |
+          mvn -q -Dstyle.color=never exec:java \
+            -Dexec.mainClass=io.github.eddytodd.bouncingballs.research.CadqLowerBoundProbeCli \
+            -Dexec.args="--balls 100,300 --seeds 3 --ks 1,2,4,8" \
+            > cadq-lower-bound-probe.csv
+          python3 benchmarks/summarize_lower_bound_probe.py cadq-lower-bound-probe.csv
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/agent/cadq-lower-bound-probe'
+        with:
+          name: cadq-lower-bound-probe-${{ github.sha }}
+          retention-days: 90
+          path: cadq-lower-bound-probe.csv
