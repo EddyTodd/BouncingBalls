@@ -20,83 +20,57 @@ jobs:
       - name: Verify regression suite
         run: mvn -B test
 
-      - name: Run matched baseline without temporal pruning
+      - name: Run candidate first with temporal pruning
         shell: bash
         run: |
           mkdir -p target/research
           mvn -B exec:java \
-            -Dbouncingballs.commit="${GITHUB_SHA}-pruning-disabled" \
-            -Dbouncingballs.cadqTemporalPruning=false \
-            -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
-            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/baseline.jsonl --overwrite" \
-            2>&1 | tee target/research/baseline-console.log
-
-      - name: Run matched candidate with temporal pruning
-        shell: bash
-        run: |
-          mvn -B exec:java \
             -Dbouncingballs.commit="${GITHUB_SHA}-pruning-enabled" \
             -Dbouncingballs.cadqTemporalPruning=true \
             -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
-            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/candidate.jsonl --overwrite" \
+            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 5 --warmups 2 --repetitions 10 --duration 1 --out target/research/candidate.jsonl --overwrite" \
             2>&1 | tee target/research/candidate-console.log
 
-      - name: Profile temporal pruning mechanism
+      - name: Run baseline second without temporal pruning
         shell: bash
         run: |
           mvn -B exec:java \
-            -Dbouncingballs.commit="${GITHUB_SHA}" \
-            -Dbouncingballs.cadqTemporalPruning=true \
-            -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CadqProfileCli \
-            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/profile.jsonl --overwrite" \
-            2>&1 | tee target/research/profile-console.log
+            -Dbouncingballs.commit="${GITHUB_SHA}-pruning-disabled" \
+            -Dbouncingballs.cadqTemporalPruning=false \
+            -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
+            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 5 --warmups 2 --repetitions 10 --duration 1 --out target/research/baseline.jsonl --overwrite" \
+            2>&1 | tee target/research/baseline-console.log
 
-      - name: Compare matched campaigns
+      - name: Compare reversed-order replication
         shell: bash
         run: |
-          python3 benchmarks/compare_campaigns.py target/research/baseline.jsonl target/research/candidate.jsonl --balls 20 --bootstrap 20000 --seed 42 | tee target/research/comparison-20.txt
-          python3 benchmarks/compare_campaigns.py target/research/baseline.jsonl target/research/candidate.jsonl --balls 100 --bootstrap 20000 --seed 42 | tee target/research/comparison-100.txt
+          python3 benchmarks/compare_campaigns.py target/research/baseline.jsonl target/research/candidate.jsonl --balls 20 --bootstrap 20000 --seed 43 | tee target/research/comparison-20.txt
+          python3 benchmarks/compare_campaigns.py target/research/baseline.jsonl target/research/candidate.jsonl --balls 100 --bootstrap 20000 --seed 43 | tee target/research/comparison-100.txt
 
-      - name: Summarize mechanism evidence
+      - name: Summarize exact-work reduction
         shell: bash
         run: |
           python3 - <<'PY' | tee target/research/mechanism-summary.txt
           import json
           import statistics
-          from collections import defaultdict
           from pathlib import Path
 
-          def rows(name):
-              return [json.loads(line) for line in Path(name).read_text().splitlines() if line.strip()]
+          def trials(path):
+              rows = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+              return [r for r in rows if r.get('recordType') == 'trial'
+                      and r.get('algorithm') == 'COMPUTE_AHEAD_DEPENDENCY_QUEUE']
 
-          baseline = [r for r in rows('target/research/baseline.jsonl')
-                      if r.get('recordType') == 'trial' and r.get('algorithm') == 'COMPUTE_AHEAD_DEPENDENCY_QUEUE']
-          candidate = [r for r in rows('target/research/candidate.jsonl')
-                       if r.get('recordType') == 'trial' and r.get('algorithm') == 'COMPUTE_AHEAD_DEPENDENCY_QUEUE']
-
+          baseline = trials('target/research/baseline.jsonl')
+          candidate = trials('target/research/candidate.jsonl')
           for balls in (20, 100):
               b = [r for r in baseline if r['requestedBalls'] == balls]
               c = [r for r in candidate if r['requestedBalls'] == balls]
-              print('balls', balls)
+              print('balls', balls, 'samples', len(c))
               for metric in ('toiQueries', 'candidateChecks'):
                   bm = statistics.median(r[metric] for r in b)
                   cm = statistics.median(r[metric] for r in c)
-                  change = (cm / bm - 1.0) * 100.0 if bm else 0.0
-                  print(metric, 'baseline_median=', bm, 'candidate_median=', cm, 'change_pct=', f'{change:.3f}')
-
-          profile = [r for r in rows('target/research/profile.jsonl') if r.get('recordType') == 'profile']
-          print('profile_trials', len(profile))
-          for metric in ('cadqTemporalBoundChecks', 'cadqTemporalPrunes', 'cadqTemporalPrunePercent', 'toiQueries'):
-              print(metric, 'median=', statistics.median(r[metric] for r in profile),
-                    'mean=', statistics.fmean(r[metric] for r in profile))
-          by_workload = defaultdict(list)
-          for r in profile:
-              by_workload[r['workload']].append(r)
-          for workload in sorted(by_workload):
-              group = by_workload[workload]
-              print(workload,
-                    'prune_pct_median=', f"{statistics.median(r['cadqTemporalPrunePercent'] for r in group):.3f}",
-                    'toi_median=', statistics.median(r['toiQueries'] for r in group))
+                  print(metric, 'baseline_median=', bm, 'candidate_median=', cm,
+                        'change_pct=', f'{(cm / bm - 1.0) * 100.0:.3f}')
           PY
 
       - name: Enforce correctness gates
@@ -105,7 +79,7 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-          for name in ('baseline.jsonl', 'candidate.jsonl'):
+          for name in ('candidate.jsonl', 'baseline.jsonl'):
               records = [json.loads(line) for line in Path('target/research', name).read_text().splitlines() if line.strip()]
               summary = next(r for r in reversed(records) if r.get('recordType') == 'summary')
               print(name, json.dumps(summary, sort_keys=True))
@@ -113,10 +87,10 @@ jobs:
                   raise SystemExit(f'{name} failed correctness gate')
           PY
 
-      - name: Preserve research evidence
+      - name: Preserve replication evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cadq-temporal-pruning-${{ github.sha }}
+          name: cadq-temporal-pruning-replication-${{ github.sha }}
           path: target/research/
           if-no-files-found: error
