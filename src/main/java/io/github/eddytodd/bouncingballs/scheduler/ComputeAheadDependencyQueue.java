@@ -16,14 +16,22 @@ import java.util.*;
  *
  * <p>Full owner selections, including initial construction, seed their current-best horizon with the four cheap wall
  * TOIs. Pair candidates whose conservative temporal reachability bound cannot reach contact by that horizon skip the
- * exact pair TOI solve. Local refreshes use their already-valid retained event as the horizon. Set
- * {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve the exact pre-pruning path for research A/B runs.</p>
+ * exact pair TOI solve. On later full reselections, the owner's previously retained pair target can be evaluated first
+ * as an allocation-free warm start. That target is never queried twice and still passes through the same conservative
+ * reachability proof, so ordering cannot add exact pair work. A surviving prior target can tighten the horizon before
+ * the canonical scan and thereby make more later candidates provably unreachable. Local refreshes use their already-
+ * valid retained event as the horizon.</p>
+ *
+ * <p>Set {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve the exact pre-pruning path. Set
+ * {@code -Dbouncingballs.cadqWarmStartOrdering=false} to preserve the accepted axis+radial temporal-pruning path while
+ * disabling only retained-target candidate ordering for causal research A/B runs.</p>
  *
  * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
  * avoid the repeated {@link System#nanoTime()} calls used by the diagnostic profiler.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
     private static final String TEMPORAL_PRUNING_PROPERTY = "bouncingballs.cadqTemporalPruning";
+    private static final String WARM_START_ORDERING_PROPERTY = "bouncingballs.cadqWarmStartOrdering";
     private static final double TIME_SLACK_MULTIPLIER = 4.0;
 
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
@@ -36,11 +44,13 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     private double now;
     private boolean profile;
     private boolean temporalPruning;
+    private boolean warmStartOrdering;
 
     @Override
     public void rebuild(List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
         profile = Boolean.getBoolean("bouncingballs.cadqProfile");
         temporalPruning = Boolean.parseBoolean(System.getProperty(TEMPORAL_PRUNING_PROPERTY, "true"));
+        warmStartOrdering = Boolean.parseBoolean(System.getProperty(WARM_START_ORDERING_PROPERTY, "true"));
         bodies = balls.toArray(Ball[]::new);
         Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
 
@@ -54,8 +64,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         now = 0;
 
         // The advance-only experiment established that the temporal bound is conservative and useful. Initial owner
-        // selection has the same exact wall horizon available, so the accepted mechanism can now prune construction
-        // pair solves as a separately measured scaling experiment.
+        // selection has the same exact wall horizon available, so the accepted mechanism can prune construction pair
+        // solves. There is intentionally no warm start during construction because no retained target exists yet.
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
             recompute(ownerSlot, bounds, policy, stats, true);
         }
@@ -68,6 +78,9 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             NumericalPolicy policy,
             SimulationStats stats,
             boolean allowTemporalPruning) {
+        // Keep the immutable target array alive long enough to recover one prior pair candidate before removing its
+        // reverse dependencies. The later canonical scan skips that target, so warm starting only reorders work.
+        int[] previousTargets = outboundTargets[ownerSlot];
         removeOutbound(ownerSlot, stats);
         selection.reset();
         Ball owner = bodies[ownerSlot];
@@ -77,7 +90,31 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             for (int wall = 0; wall < 4; wall++) {
                 consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
             }
+
+            int warmTarget = warmStartOrdering ? firstPriorPairTarget(previousTargets, ownerSlot) : -1;
+            if (warmTarget >= 0) {
+                stats.cadqWarmStartOpportunities++;
+                Ball priorTarget = bodies[warmTarget];
+                if (shouldPrunePair(owner, priorTarget, policy, stats)) {
+                    stats.cadqWarmStartTemporalPrunes++;
+                } else {
+                    double previousBest = selection.size == 0
+                            ? Double.POSITIVE_INFINITY
+                            : selection.events[0].time();
+                    CollisionEvent candidate = EventPredictions.pair(owner, priorTarget, policy, stats, now);
+                    stats.cadqWarmStartExactProbes++;
+                    if (candidate != null) {
+                        stats.cadqWarmStartFiniteHits++;
+                        if (selection.size == 0 || earlier(candidate.time(), previousBest, policy)) {
+                            stats.cadqWarmStartHorizonTightens++;
+                        }
+                    }
+                    consider(candidate, warmTarget, policy);
+                }
+            }
+
             for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
+                if (otherSlot == warmTarget) continue;
                 if (shouldPrunePair(owner, bodies[otherSlot], policy, stats)) continue;
                 consider(
                         EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
@@ -99,6 +136,14 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         install(ownerSlot, stats);
         stats.predictionRecomputations++;
         stats.cadqFullReselections++;
+    }
+
+    private int firstPriorPairTarget(int[] previousTargets, int ownerSlot) {
+        if (previousTargets == null) return -1;
+        for (int targetSlot : previousTargets) {
+            if (targetSlot > ownerSlot && targetSlot < bodies.length) return targetSlot;
+        }
+        return -1;
     }
 
     private void refreshAgainstChanged(
