@@ -16,8 +16,9 @@ public final class Simulation {
 
     public Simulation(List<Ball> balls, Bounds bounds, SimulationConfig config) {
         this.balls = List.copyOf(balls);
-        this.bounds = bounds;
-        this.config = config;
+        validateBodies(this.balls);
+        this.bounds = Objects.requireNonNull(bounds, "bounds");
+        this.config = Objects.requireNonNull(config, "config");
         this.scheduler = switch (config.scheduler()) {
             case ALL_PAIRS_CCD -> new AllPairsCcdScheduler();
             case GLOBAL_EVENT_QUEUE -> new GlobalEventQueueScheduler();
@@ -30,6 +31,16 @@ public final class Simulation {
             case DIRECT -> new DirectIslandResolver();
         };
         if (scheduler != null) scheduler.rebuild(this.balls, bounds, config.numericalPolicy(), stats);
+    }
+
+    private static void validateBodies(List<Ball> balls) {
+        Set<Integer> ids = new HashSet<>();
+        for (Ball ball : balls) {
+            Objects.requireNonNull(ball, "ball");
+            if (!ids.add(ball.id)) {
+                throw new IllegalArgumentException("ball ids must be unique; duplicate id " + ball.id);
+            }
+        }
     }
 
     public List<Ball> balls() { return balls; }
