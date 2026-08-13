@@ -12,7 +12,7 @@ mvn exec:java -Dexec.args="--algorithm GLOBAL_EVENT_QUEUE --workload NEWTON_CRAD
 mvn exec:java -Dexec.mainClass=io.github.eddytodd.bouncingballs.demo.SwingDemo
 ```
 
-Use `--list` to list modes. The single-run CLI accepts `--algorithm`, `--resolver`, `--workload`, `--balls`, `--seed`, `--restitution`, `--duration`, `--events`, `--step`, and `--out` (JSON Lines).
+Use `--list` to list modes. The single-run CLI accepts `--algorithm`, `--resolver`, `--workload`, `--balls`, `--seed`, `--restitution`, `--duration`, `--events`, `--step`, and `--out`.
 
 Examples:
 
@@ -23,11 +23,11 @@ Examples:
 --algorithm GLOBAL_EVENT_QUEUE --workload ACCELERATED --restitution .8 --balls 100
 ```
 
-The single-run output now separates workload generation, simulation/scheduler construction, and `advance()` timing. `totalEngineNanos` includes scheduler initialization plus simulation advance; workload generation is deliberately excluded from engine timing.
+Single-run output separates workload generation, simulation/scheduler construction, and `advance()` timing. `totalEngineNanos` includes scheduler initialization plus simulation advance; workload generation is excluded from engine comparisons.
 
 ## Differential research campaign
 
-Performance claims are gated by differential correctness against `ALL_PAIRS_CCD`. `CampaignCli` regenerates the exact seeded initial state for every scheduler, runs a reference simulation, performs configurable JVM warmups and interleaved repetitions, and compares final simulation time, positions, and velocities with a scale-aware state oracle.
+`CampaignCli` regenerates the same seeded initial state for every scheduler, uses `ALL_PAIRS_CCD` as a reference, performs configurable warmups and interleaved repetitions, and emits raw JSONL evidence.
 
 ```bash
 mvn exec:java \
@@ -36,9 +36,11 @@ mvn exec:java \
   -Dexec.args="--workloads ALL --balls 10,100 --seeds 5 --warmups 2 --repetitions 10 --duration 1 --out benchmarks/results/cadq-validation.jsonl"
 ```
 
-A campaign fails if any measured scheduler throws or diverges from the all-pairs final state. Raw JSONL includes environment provenance, construction/advance/total timings, TOI work, queue operations, stale-event behavior, CADQ reselections/local refreshes, and maximum queue size. See [`benchmarks/README.md`](benchmarks/README.md) for the evidence protocol and interpretation rules.
+Correctness is structural as well as numerical. Runs record a deterministic physical contact-history fingerprint. A measured scheduler must reproduce the reference collision history and remain inside an explicit final-state drift ceiling. A tighter state comparison remains visible separately as `numericalDriftWarning`, so floating-point path dependence is not mislabeled as a missed collision or silently ignored.
 
-Randomized workloads are now rejection-sampled so bodies start finite, inside the domain, and without penetration. Constructed contact topologies such as `NEWTON_CRADLE` may intentionally start touching; large cradles automatically receive a sufficiently large domain. This sanitation means historical pre-campaign measurements must not be mixed with new results as though they came from an identical workload generator.
+The first bounded post-optimization hosted campaign produced **630 measured trials with 0 physical correctness failures and 0 execution failures**. It also retained 30 strict numerical-drift warnings in high-speed/wall-heavy 100-ball cases whose physical collision histories were identical.
+
+See [`benchmarks/README.md`](benchmarks/README.md) for the campaign protocol and [`docs/COLLISION_ALGORITHM_RESEARCH.md`](docs/COLLISION_ALGORITHM_RESEARCH.md) for the algorithmic evidence and interpretation.
 
 ## Implemented modes
 
@@ -46,16 +48,27 @@ Randomized workloads are now rejection-sampled so bodies start finite, inside th
 |---|---|---|
 | `DISCRETE_BASELINE` | fixed-step overlap control | tunnels by design |
 | `ALL_PAIRS_CCD` | complete rebuild correctness reference | quadratic prediction work |
-| `GLOBAL_EVENT_QUEUE` | generation-validated heap | stale entries grow under heavy invalidation |
-| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | retained earliest-time tie sets plus reverse dependencies and local invalidation | worst-case dependency fan-out can still approach full reselection |
+| `GLOBAL_EVENT_QUEUE` | generation-validated global heap | stale entries and queue growth under invalidation |
+| `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | canonical pair ownership, earliest tie sets, reverse dependencies, local invalidation | bookkeeping overhead remains measurable |
 
 Resolvers are `SEQUENTIAL`, deterministic pairwise impulses; `ITERATIVE`, symmetric projected Gauss-Seidel; and `DIRECT`, a coupled normal-impulse linear solve with iterative fallback for singular or negative-impulse systems.
 
-The CADQ milestone removes the original correctness-first safeguard that fully reselected every owner after every event. Changed owners and owners whose retained predictions depend on them are fully recomputed; unaffected owners only test the changed bodies for a newly earlier event. An owner retains every event tied for its earliest time, rather than a single edge, so multi-contact simultaneous collision graphs are not silently truncated. Output exposes `cadqFullReselections` and `cadqLocalPairRefreshes` so the optimization can be measured instead of inferred. See [the research note](docs/COLLISION_ALGORITHM_RESEARCH.md) for the invariant and falsification criteria.
+## CADQ status
 
-The motion model is exact constant velocity or constant acceleration between trajectory changes. Constant-acceleration circle contact is a quartic in time; the implementation isolates real roots by recursively partitioning at derivative roots and bisecting, rather than relying on a fragile quartic formula. Floating-point root error remains documented in [the research note](docs/COLLISION_ALGORITHM_RESEARCH.md).
+CADQ has evolved through measured falsification rather than assumed optimization:
 
-Public API: create `Ball`s, construct `Simulation(balls, bounds, config)`, call `advance(seconds, maxEvents)`, then read `balls()` and `stats()`.
+1. an initial correctness safeguard fully reselected every owner and empirically destroyed the intended advantage;
+2. dependency-local invalidation removed that safeguard and preserved simultaneous-contact tie sets;
+3. the first serious campaign showed CADQ still performed almost twice as many TOI queries as the global heap;
+4. canonical lower-id ownership now evaluates each unordered ball pair once per full selection.
+
+After canonical ownership, 100-ball CADQ TOI counts are approximately equal to GLOBAL while CADQ keeps a substantially smaller global queue. In the same hosted campaign CADQ was still generally about 2–20% slower than GLOBAL in most 100-ball workloads (with a larger sparse-case gap), so the current bottleneck is no longer primarily collision prediction. The next research target is dense/indexed dependency bookkeeping before introducing a spatial broad phase.
+
+`Simulation` requires unique body ids because canonical pair ownership uses stable ids to choose the single owner of each unordered pair.
+
+The motion model is exact constant velocity or constant acceleration between trajectory changes. Constant-acceleration circle contact is quartic in time; the implementation isolates real roots by recursively partitioning at derivative roots and bisecting rather than relying on a fragile closed-form quartic implementation.
+
+Public API: create `Ball`s with unique ids, construct `Simulation(balls, bounds, config)`, call `advance(seconds, maxEvents)`, then read `balls()` and `stats()`.
 
 ## Structure
 
@@ -69,4 +82,4 @@ Public API: create `Ball`s, construct `Simulation(balls, bounds, config)`, call 
 - `legacy` — preserved 2022 implementation
 - `docs` — methodology, invariants, evidence, and limitations
 
-This is deliberately balls-only: no rotation, friction, polygons, or 3D. See the research note for current limitations and appropriate interpretation of benchmark results.
+This is deliberately balls-only: no rotation, friction, polygons, or 3D. Those extensions should not obscure the current objective of understanding and empirically improving collision scheduling.
