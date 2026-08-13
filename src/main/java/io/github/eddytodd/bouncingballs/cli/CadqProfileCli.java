@@ -135,6 +135,7 @@ public final class CadqProfileCli {
                 + field("cadqInboundSets", stats.cadqInboundSets) + ","
                 + field("cadqInboundClears", stats.cadqInboundClears) + ","
                 + field("toiQueries", stats.toiQueries) + ","
+                + field("predictedEventMaterializations", stats.predictedEventMaterializations) + ","
                 + field("queuePushes", stats.queuePushes) + ","
                 + field("queuePops", stats.queuePops) + ","
                 + field("staleEvents", stats.staleEvents) + ","
