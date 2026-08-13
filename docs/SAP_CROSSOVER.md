@@ -40,10 +40,23 @@ At 0.25 simulated seconds, SAP beats GLOBAL at both tested sizes and beats CADQ 
 
 Body count alone is therefore insufficient for scheduler selection. Density, event rate, motion model and simulation horizon materially affect the winner.
 
-Within each measured pair, alternating whether SAP executed first produced essentially unchanged aggregate factors. The two completed campaign runs did not reverse comparator-family order, so the next experiment should explicitly block or reverse that factor before stronger ranking claims.
+Within each measured pair, alternating whether SAP executed first produced essentially unchanged aggregate factors. The two completed campaign runs did not reverse comparator-family order, so these remain hosted-runner population results rather than machine-independent rankings.
+
+## Duration crossover map
+
+The follow-up duration campaign directly swept `0.02-0.50` simulated seconds at 100/300 bodies. It reproduced the expected cost crossover while falsifying several tempting one-variable selectors:
+
+- at 300 bodies the aggregate SAP/CADQ point estimate crosses between 0.10 and 0.20 seconds;
+- individual workloads cross anywhere from before 0.05 seconds to beyond 0.50 seconds;
+- event-batch count alone does not collapse those boundaries;
+- initial SAP candidate fraction identifies clustered/adversarial geometry but cannot distinguish several other workload families with very different crossover horizons.
+
+Two hardened runs accepted 2,288 measured timing pairs each, with zero physical-history failures. Two 300-body high-velocity 0.50-second scenarios were excluded for exceeding the unchanged final-state drift ceiling while preserving physical history.
+
+See [`SAP_CADQ_DURATION_CROSSOVER.md`](SAP_CADQ_DURATION_CROSSOVER.md) for the complete protocol, block-bootstrap intervals, workload crossover brackets, drift exclusions, and construction-feature probe.
 
 ## Next experiment
 
-Before implementing an adaptive scheduler, map the SAP/CADQ crossover surface across simulation duration, body count, density/clustering, velocity scale, acceleration model and wall/pair event mix. Reverse comparator-family order in that campaign and test whether cheap pre-run features can predict the faster architecture.
+Do not implement a hard-coded adaptive scheduler yet. The next research step is an out-of-sample multivariate selector using only generic features available without executing both schedulers, with performance regret measured against an offline best-scheduler oracle.
 
-An adaptive scheduler should be implemented only after that selection rule is empirically falsifiable.
+The current API also constructs the scheduler before `advance(duration, ...)` supplies its horizon. A successful duration-aware selector therefore needs a separately justified lazy-initialization or expected-horizon design.
