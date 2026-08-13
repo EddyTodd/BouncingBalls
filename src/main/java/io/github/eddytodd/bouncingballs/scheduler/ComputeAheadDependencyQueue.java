@@ -14,9 +14,9 @@ import java.util.*;
  * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
  * maintain reverse dependencies without allocating wrapper objects per event.</p>
  *
- * <p>After initial construction, full reselections seed their current-best horizon with the four cheap wall TOIs.
- * Pair candidates whose conservative temporal reachability bound cannot reach contact by that horizon skip the exact
- * pair TOI solve. Local refreshes use their already-valid retained event as the horizon. Set
+ * <p>Full owner selections, including initial construction, seed their current-best horizon with the four cheap wall
+ * TOIs. Pair candidates whose conservative temporal reachability bound cannot reach contact by that horizon skip the
+ * exact pair TOI solve. Local refreshes use their already-valid retained event as the horizon. Set
  * {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve the exact pre-pruning path for research A/B runs.</p>
  *
  * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
@@ -53,10 +53,11 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         inbound = new BitSet[bodies.length];
         now = 0;
 
-        // Construction is deliberately left on the established exact scan. The measured deficit motivating temporal
-        // pruning is in advance(), and preserving the old rebuild path keeps initialization comparisons causal.
+        // The advance-only experiment established that the temporal bound is conservative and useful. Initial owner
+        // selection has the same exact wall horizon available, so the accepted mechanism can now prune construction
+        // pair solves as a separately measured scaling experiment.
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
-            recompute(ownerSlot, bounds, policy, stats, false);
+            recompute(ownerSlot, bounds, policy, stats, true);
         }
         stats.maxQueueSize = Math.max(stats.maxQueueSize, queue.size());
     }
