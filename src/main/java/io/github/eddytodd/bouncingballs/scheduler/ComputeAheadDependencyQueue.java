@@ -14,10 +14,18 @@ import java.util.*;
  * continues to store {@link CollisionEvent} directly; parallel target-slot arrays retain the metadata needed to
  * maintain reverse dependencies without allocating wrapper objects per event.</p>
  *
+ * <p>After initial construction, full reselections seed their current-best horizon with the four cheap wall TOIs.
+ * Pair candidates whose conservative temporal reachability bound cannot reach contact by that horizon skip the exact
+ * pair TOI solve. Local refreshes use their already-valid retained event as the horizon. Set
+ * {@code -Dbouncingballs.cadqTemporalPruning=false} to preserve the exact pre-pruning path for research A/B runs.</p>
+ *
  * <p>Coarse phase timing is opt-in through {@code -Dbouncingballs.cadqProfile=true}. Normal benchmark runs therefore
  * avoid the repeated {@link System#nanoTime()} calls used by the diagnostic profiler.</p>
  */
 public final class ComputeAheadDependencyQueue implements EventScheduler {
+    private static final String TEMPORAL_PRUNING_PROPERTY = "bouncingballs.cadqTemporalPruning";
+    private static final double TIME_SLACK_MULTIPLIER = 4.0;
+
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
     private final SelectionBuilder selection = new SelectionBuilder();
     private Ball[] bodies = new Ball[0];
@@ -27,10 +35,12 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
     private BitSet[] inbound = new BitSet[0];
     private double now;
     private boolean profile;
+    private boolean temporalPruning;
 
     @Override
     public void rebuild(List<Ball> balls, Bounds bounds, NumericalPolicy policy, SimulationStats stats) {
         profile = Boolean.getBoolean("bouncingballs.cadqProfile");
+        temporalPruning = Boolean.parseBoolean(System.getProperty(TEMPORAL_PRUNING_PROPERTY, "true"));
         bodies = balls.toArray(Ball[]::new);
         Arrays.sort(bodies, Comparator.comparingInt(ball -> ball.id));
 
@@ -43,8 +53,10 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         inbound = new BitSet[bodies.length];
         now = 0;
 
+        // Construction is deliberately left on the established exact scan. The measured deficit motivating temporal
+        // pruning is in advance(), and preserving the old rebuild path keeps initialization comparisons causal.
         for (int ownerSlot = 0; ownerSlot < bodies.length; ownerSlot++) {
-            recompute(ownerSlot, bounds, policy, stats);
+            recompute(ownerSlot, bounds, policy, stats, false);
         }
         stats.maxQueueSize = Math.max(stats.maxQueueSize, queue.size());
     }
@@ -53,19 +65,34 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             int ownerSlot,
             Bounds bounds,
             NumericalPolicy policy,
-            SimulationStats stats) {
+            SimulationStats stats,
+            boolean allowTemporalPruning) {
         removeOutbound(ownerSlot, stats);
         selection.reset();
         Ball owner = bodies[ownerSlot];
 
-        for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
-            consider(
-                    EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
-                    otherSlot,
-                    policy);
-        }
-        for (int wall = 0; wall < 4; wall++) {
-            consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
+        if (temporalPruning && allowTemporalPruning) {
+            // Four wall queries are cheap and usually establish a finite upper bound before the O(N) pair scan.
+            for (int wall = 0; wall < 4; wall++) {
+                consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
+            }
+            for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
+                if (shouldPrunePair(owner, bodies[otherSlot], policy, stats)) continue;
+                consider(
+                        EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
+                        otherSlot,
+                        policy);
+            }
+        } else {
+            for (int otherSlot = ownerSlot + 1; otherSlot < bodies.length; otherSlot++) {
+                consider(
+                        EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now),
+                        otherSlot,
+                        policy);
+            }
+            for (int wall = 0; wall < 4; wall++) {
+                consider(EventPredictions.wall(owner, bounds, wall, policy, stats, now), -1, policy);
+            }
         }
 
         install(ownerSlot, stats);
@@ -86,6 +113,8 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         for (int otherSlot = changedSlots.nextSetBit(ownerSlot + 1);
              otherSlot >= 0;
              otherSlot = changedSlots.nextSetBit(otherSlot + 1)) {
+            if (temporalPruning && shouldPrunePair(owner, bodies[otherSlot], policy, stats)) continue;
+
             CollisionEvent candidate = EventPredictions.pair(owner, bodies[otherSlot], policy, stats, now);
             stats.cadqLocalPairRefreshes++;
             if (candidate == null) continue;
@@ -104,6 +133,28 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
             removeOutbound(ownerSlot, stats);
             install(ownerSlot, stats);
         }
+    }
+
+    private boolean shouldPrunePair(
+            Ball owner,
+            Ball other,
+            NumericalPolicy policy,
+            SimulationStats stats) {
+        if (selection.size == 0) return false;
+
+        double bestTime = selection.events[0].time();
+        double relativeHorizon = bestTime - now;
+        if (!Double.isFinite(relativeHorizon)) return false;
+
+        double timeScale = Math.max(Math.abs(bestTime), Math.abs(now));
+        double tieSlack = TIME_SLACK_MULTIPLIER * policy.tolerance(timeScale);
+        double horizon = Math.max(0.0, relativeHorizon) + tieSlack;
+
+        stats.cadqTemporalBoundChecks++;
+        if (TemporalReachability.couldContactWithin(owner, other, horizon, policy)) return false;
+
+        stats.cadqTemporalPrunes++;
+        return true;
     }
 
     private void consider(CollisionEvent candidate, int targetSlot, NumericalPolicy policy) {
@@ -253,7 +304,7 @@ public final class ComputeAheadDependencyQueue implements EventScheduler {
         for (int ownerSlot = full.nextSetBit(0);
              ownerSlot >= 0;
              ownerSlot = full.nextSetBit(ownerSlot + 1)) {
-            recompute(ownerSlot, bounds, policy, stats);
+            recompute(ownerSlot, bounds, policy, stats, true);
         }
         if (profile) stats.cadqFullReselectionNanos += System.nanoTime() - fullStart;
 

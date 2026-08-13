@@ -250,8 +250,10 @@ public final class CampaignCli {
                 + field("recordType", "environment") + ","
                 + field("campaignId", campaignId) + ","
                 + field("startedAt", started.toString()) + ","
-                + field("campaignSchema", 2) + ","
+                + field("campaignSchema", 3) + ","
                 + field("commit", commitIdentity()) + ","
+                + field("cadqTemporalPruning", Boolean.parseBoolean(
+                        System.getProperty("bouncingballs.cadqTemporalPruning", "true"))) + ","
                 + field("javaVersion", System.getProperty("java.version")) + ","
                 + field("javaVmName", System.getProperty("java.vm.name")) + ","
                 + field("javaVmVersion", System.getProperty("java.vm.version")) + ","
@@ -338,6 +340,7 @@ public final class CampaignCli {
         json.append(',').append(field("physicalContactHash", Long.toUnsignedString(stats.physicalContactHash)));
         json.append(',').append(field("toiQueries", stats.toiQueries));
         json.append(',').append(field("candidateChecks", stats.candidateChecks));
+        json.append(',').append(field("predictedEventMaterializations", stats.predictedEventMaterializations));
         json.append(',').append(field("queuePushes", stats.queuePushes));
         json.append(',').append(field("queuePops", stats.queuePops));
         json.append(',').append(field("validEvents", stats.validEvents));
@@ -347,6 +350,9 @@ public final class CampaignCli {
         json.append(',').append(field("dependencyInvalidations", stats.dependencyInvalidations));
         json.append(',').append(field("cadqFullReselections", stats.cadqFullReselections));
         json.append(',').append(field("cadqLocalPairRefreshes", stats.cadqLocalPairRefreshes));
+        json.append(',').append(field("cadqTemporalBoundChecks", stats.cadqTemporalBoundChecks));
+        json.append(',').append(field("cadqTemporalPrunes", stats.cadqTemporalPrunes));
+        json.append(',').append(field("cadqTemporalPrunePercent", stats.cadqTemporalPrunePercent()));
         json.append(',').append(field("maxQueueSize", stats.maxQueueSize));
     }
 
