@@ -1,0 +1,58 @@
+name: cadq-local-bound-campaign
+
+on:
+  push:
+    branches:
+      - agent/cadq-phase-profile
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify regression suite
+        run: mvn -B test
+      - name: Run uninstrumented differential campaign
+        id: campaign
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p target/research
+          mvn -B exec:java \
+            -Dbouncingballs.commit="${GITHUB_SHA}" \
+            -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
+            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/campaign.jsonl --overwrite" \
+            2>&1 | tee target/research/campaign-console.log
+          exit ${PIPESTATUS[0]}
+      - name: Preserve campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cadq-local-bound-campaign-${{ github.sha }}
+          path: target/research/
+          if-no-files-found: error
+      - name: Enforce campaign result
+        if: always()
+        shell: bash
+        env:
+          CAMPAIGN_OUTCOME: ${{ steps.campaign.outcome }}
+        run: |
+          if [ "$CAMPAIGN_OUTCOME" != "success" ]; then
+            echo "Campaign process failed; see preserved diagnostics."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          records = [json.loads(line) for line in Path('target/research/campaign.jsonl').read_text().splitlines() if line.strip()]
+          summary = next(r for r in reversed(records) if r.get('recordType') == 'summary')
+          print(json.dumps(summary, sort_keys=True))
+          if not summary['passed']:
+              raise SystemExit(json.dumps(summary, sort_keys=True))
+          PY
