@@ -117,7 +117,7 @@ class SimulationTest {
     }
 
     @Test
-    void cadqInvalidationDoesNotFullReselectEveryOwner() {
+    void cadqLowIdChangesNeedNoUnaffectedPairRefreshes() {
         List<Ball> balls = new ArrayList<>();
         balls.add(ball(0, 10, 1));
         balls.add(ball(1, 14, 0));
@@ -128,6 +128,7 @@ class SimulationTest {
         SimulationStats stats = new SimulationStats();
         queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
         long initialFull = stats.cadqFullReselections;
+        long initialLocal = stats.cadqLocalPairRefreshes;
 
         balls.get(0).generation++;
         balls.get(1).generation++;
@@ -135,8 +136,29 @@ class SimulationTest {
                 Set.of(balls.get(0), balls.get(1)), balls, bounds, NumericalPolicy.DEFAULT, stats);
 
         long updateFull = stats.cadqFullReselections - initialFull;
+        long updateLocal = stats.cadqLocalPairRefreshes - initialLocal;
         assertTrue(updateFull < balls.size(), "a local two-body change must not trigger all-owner full reselection");
-        assertTrue(stats.cadqLocalPairRefreshes > 0, "unaffected canonical owners should test changed bodies");
+        assertEquals(0, updateLocal,
+                "changed lower-id owners already recompute every pair they canonically own");
+    }
+
+    @Test
+    void cadqHighIdChangeRefreshesOnlyLowerIdCanonicalOwners() {
+        List<Ball> balls = new ArrayList<>();
+        for (int i = 0; i < 8; i++) balls.add(ball(i, 50 + i * 100, 0));
+
+        Bounds bounds = new Bounds(0, -10, 1000, 10);
+        ComputeAheadDependencyQueue queue = new ComputeAheadDependencyQueue();
+        SimulationStats stats = new SimulationStats();
+        queue.rebuild(balls, bounds, NumericalPolicy.DEFAULT, stats);
+        long initialLocal = stats.cadqLocalPairRefreshes;
+
+        Ball changed = balls.get(7);
+        changed.generation++;
+        queue.trajectoriesChanged(Set.of(changed), balls, bounds, NumericalPolicy.DEFAULT, stats);
+
+        assertEquals(7, stats.cadqLocalPairRefreshes - initialLocal,
+                "each lower-id owner should test the changed high-id body exactly once");
     }
 
     @Test
