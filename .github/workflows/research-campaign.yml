@@ -1,0 +1,78 @@
+name: research-campaign
+
+on:
+  push:
+    branches:
+      - agent/dense-cadq-bookkeeping
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify regression suite
+        run: mvn -B test
+      - name: Run bounded scheduler campaign
+        shell: bash
+        run: |
+          mkdir -p target/research
+          mvn -B exec:java \
+            -Dbouncingballs.commit="${GITHUB_SHA}" \
+            -Dexec.mainClass=io.github.eddytodd.bouncingballs.cli.CampaignCli \
+            -Dexec.args="--workloads SPARSE_UNIFORM,DENSE_UNIFORM,CLUSTERED,HIGH_VELOCITY,WALL_DOMINATED,ACCELERATED,ADVERSARIAL_INVALIDATION --balls 20,100 --seeds 3 --warmups 1 --repetitions 5 --duration 1 --out target/research/campaign.jsonl --overwrite" \
+            > target/research/campaign-console.log 2>&1
+      - name: Summarize campaign
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import statistics
+          from collections import defaultdict
+          from pathlib import Path
+
+          records = [json.loads(line) for line in Path('target/research/campaign.jsonl').read_text().splitlines() if line.strip()]
+          summary = next(r for r in reversed(records) if r.get('recordType') == 'summary')
+          print('CAMPAIGN_SUMMARY', json.dumps(summary, sort_keys=True))
+
+          trials = [r for r in records if r.get('recordType') == 'trial']
+          groups = defaultdict(list)
+          for row in trials:
+              groups[(row['workload'], row['requestedBalls'], row['algorithm'])].append(row)
+
+          print('workload balls algorithm total_ms construct_ms advance_ms toi stale_pct max_queue')
+          for key in sorted(groups):
+              rows = groups[key]
+              good = [r for r in rows if r.get('success')]
+              print(
+                  key[0], key[1], key[2],
+                  f"{statistics.median(r['totalEngineNanos'] for r in good)/1e6:.6f}",
+                  f"{statistics.median(r['constructionNanos'] for r in good)/1e6:.6f}",
+                  f"{statistics.median(r['advanceNanos'] for r in good)/1e6:.6f}",
+                  f"{statistics.median(r['toiQueries'] for r in good):.0f}",
+                  f"{statistics.median(r['stalePercent'] for r in good):.3f}",
+                  f"{statistics.median(r['maxQueueSize'] for r in good):.0f}")
+          PY
+      - name: Preserve raw campaign
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dense-cadq-campaign-${{ github.sha }}
+          path: target/research/campaign.jsonl
+          if-no-files-found: error
+      - name: Enforce correctness
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          records = [json.loads(line) for line in Path('target/research/campaign.jsonl').read_text().splitlines() if line.strip()]
+          summary = next(r for r in reversed(records) if r.get('recordType') == 'summary')
+          if not summary['passed']:
+              raise SystemExit(json.dumps(summary, sort_keys=True))
+          PY
