@@ -31,12 +31,13 @@ Changing workload generation changes the experiment population. Historical measu
 
 ## Timing definition
 
-Each run records:
+`CampaignCli` creates the deterministic workload before engine timing starts. Each measured campaign run records:
 
-- `workloadGenerationNanos`: deterministic scenario creation; **not** part of scheduler timing;
 - `constructionNanos`: `Simulation` construction, including the scheduler's initial prediction/rebuild work;
 - `advanceNanos`: `Simulation.advance(...)` only;
 - `totalEngineNanos`: `constructionNanos + advanceNanos`.
+
+The single-run `LabCli` additionally records `workloadGenerationNanos` so scenario-generation cost can be inspected, but that value is deliberately excluded from scheduler comparisons.
 
 The older single-run CLI timed only `advance()`. That field was insufficient for fair comparisons because algorithms can move meaningful work into initialization. New evidence must use the split timing fields.
 
