@@ -17,8 +17,6 @@ import java.util.*;
  * implementation a clean architectural comparator to {@link AllPairsCcdScheduler}, rather than another CADQ filter.</p>
  */
 public final class SweepAndPruneCcdScheduler implements EventScheduler {
-    private static final double SLACK_MULTIPLIER = 8.0;
-
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
     private double now;
 
@@ -42,7 +40,7 @@ public final class SweepAndPruneCcdScheduler implements EventScheduler {
         stats.sapCanonicalPairs += canonicalPairs;
 
         if (canonicalPairs != 0) {
-            double horizon = conservativeHorizon(earliestWall, policy);
+            double horizon = SweptAabb.conservativeHorizon(earliestWall, policy);
             if (Double.isFinite(horizon)) {
                 addSweepCandidates(balls, horizon, policy, stats);
             } else {
@@ -60,17 +58,17 @@ public final class SweepAndPruneCcdScheduler implements EventScheduler {
             double horizon,
             NumericalPolicy policy,
             SimulationStats stats) {
-        List<SweptBounds> intervals = new ArrayList<>(balls.size());
-        for (Ball ball : balls) intervals.add(sweptBounds(ball, horizon, policy));
+        List<SweptAabb.Box> intervals = new ArrayList<>(balls.size());
+        for (Ball ball : balls) intervals.add(SweptAabb.forBall(ball, horizon, policy));
         intervals.sort(Comparator
-                .comparingDouble(SweptBounds::minX)
+                .comparingDouble(SweptAabb.Box::minX)
                 .thenComparingInt(interval -> interval.ball().id));
 
-        ArrayList<SweptBounds> active = new ArrayList<>();
-        for (SweptBounds current : intervals) {
+        ArrayList<SweptAabb.Box> active = new ArrayList<>();
+        for (SweptAabb.Box current : intervals) {
             int write = 0;
             for (int read = 0; read < active.size(); read++) {
-                SweptBounds prior = active.get(read);
+                SweptAabb.Box prior = active.get(read);
                 stats.sapXActiveChecks++;
                 if (prior.maxX() < current.minX()) continue;
 
@@ -78,7 +76,7 @@ public final class SweepAndPruneCcdScheduler implements EventScheduler {
                 write++;
                 stats.sapXOverlapPairs++;
 
-                if (!overlaps(prior.minY(), prior.maxY(), current.minY(), current.maxY())) continue;
+                if (prior.maxY() < current.minY() || current.maxY() < prior.minY()) continue;
                 stats.sapExactPairCandidates++;
                 EventPredictions.addPair(prior.ball(), current.ball(), policy, stats, queue, now);
             }
@@ -94,82 +92,6 @@ public final class SweepAndPruneCcdScheduler implements EventScheduler {
                 EventPredictions.addPair(balls.get(i), balls.get(j), policy, stats, queue, now);
             }
         }
-    }
-
-    private static double conservativeHorizon(double exactWallHorizon, NumericalPolicy policy) {
-        if (!Double.isFinite(exactWallHorizon)) return Double.POSITIVE_INFINITY;
-        double slack = SLACK_MULTIPLIER * policy.tolerance(exactWallHorizon);
-        double expanded = exactWallHorizon + slack;
-        return Double.isFinite(expanded) ? Math.nextUp(expanded) : Double.POSITIVE_INFINITY;
-    }
-
-    private static SweptBounds sweptBounds(Ball ball, double horizon, NumericalPolicy policy) {
-        AxisBounds x = sweptAxis(
-                ball.position.x,
-                ball.velocity.x,
-                ball.acceleration.x,
-                ball.radius,
-                horizon,
-                policy);
-        AxisBounds y = sweptAxis(
-                ball.position.y,
-                ball.velocity.y,
-                ball.acceleration.y,
-                ball.radius,
-                horizon,
-                policy);
-        return new SweptBounds(ball, x.min(), x.max(), y.min(), y.max());
-    }
-
-    private static AxisBounds sweptAxis(
-            double position,
-            double velocity,
-            double acceleration,
-            double radius,
-            double horizon,
-            NumericalPolicy policy) {
-        if (!Double.isFinite(position)
-                || !Double.isFinite(velocity)
-                || !Double.isFinite(acceleration)
-                || !Double.isFinite(radius)
-                || !Double.isFinite(horizon)) {
-            return AxisBounds.UNBOUNDED;
-        }
-
-        double end = positionAt(position, velocity, acceleration, horizon);
-        if (!Double.isFinite(end)) return AxisBounds.UNBOUNDED;
-
-        double min = Math.min(position, end);
-        double max = Math.max(position, end);
-
-        if (acceleration != 0.0) {
-            double vertex = -velocity / acceleration;
-            double timeSlack = SLACK_MULTIPLIER * policy.tolerance(horizon);
-            if (Double.isFinite(vertex) && vertex >= -timeSlack && vertex <= horizon + timeSlack) {
-                double t = Math.max(0.0, Math.min(horizon, vertex));
-                double value = positionAt(position, velocity, acceleration, t);
-                if (!Double.isFinite(value)) return AxisBounds.UNBOUNDED;
-                min = Math.min(min, value);
-                max = Math.max(max, value);
-            }
-        }
-
-        double scale = Math.max(1.0, Math.max(Math.abs(min), Math.max(Math.abs(max), Math.abs(radius))));
-        double padding = radius + SLACK_MULTIPLIER * policy.tolerance(scale);
-        if (!Double.isFinite(padding)) return AxisBounds.UNBOUNDED;
-
-        double lower = min - padding;
-        double upper = max + padding;
-        if (!Double.isFinite(lower) || !Double.isFinite(upper)) return AxisBounds.UNBOUNDED;
-        return new AxisBounds(Math.nextDown(lower), Math.nextUp(upper));
-    }
-
-    private static double positionAt(double position, double velocity, double acceleration, double t) {
-        return Math.fma(0.5 * acceleration * t, t, Math.fma(velocity, t, position));
-    }
-
-    private static boolean overlaps(double aMin, double aMax, double bMin, double bMax) {
-        return aMax >= bMin && bMax >= aMin;
     }
 
     @Override
@@ -200,11 +122,4 @@ public final class SweepAndPruneCcdScheduler implements EventScheduler {
     public void timeAdvanced(double dt) {
         now += dt;
     }
-
-    private record AxisBounds(double min, double max) {
-        private static final AxisBounds UNBOUNDED =
-                new AxisBounds(Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY);
-    }
-
-    private record SweptBounds(Ball ball, double minX, double maxX, double minY, double maxY) {}
 }
