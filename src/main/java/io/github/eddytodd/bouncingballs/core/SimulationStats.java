@@ -34,6 +34,14 @@ public final class SimulationStats {
     public long sapRebuilds, sapCanonicalPairs, sapXActiveChecks, sapXOverlapPairs,
             sapExactPairCandidates, sapAllPairsFallbackRebuilds;
 
+    /**
+     * Swept-BVH mechanism counts. Node visits include rejected hierarchy nodes; exact pair candidates count only
+     * overlapping leaf pairs that reach exact TOI prediction. Nodes/depth characterize rebuild cost independently
+     * of pair pruning. Fallback rebuilds intentionally evaluate every canonical pair.
+     */
+    public long bvhRebuilds, bvhCanonicalPairs, bvhNodeVisits, bvhExactPairCandidates,
+            bvhNodesBuilt, bvhMaxDepth, bvhAllPairsFallbackRebuilds;
+
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
 
@@ -59,6 +67,12 @@ public final class SimulationStats {
         return sapCanonicalPairs == 0
                 ? 0
                 : 100.0 * (sapCanonicalPairs - sapExactPairCandidates) / sapCanonicalPairs;
+    }
+
+    public double bvhPairPrunePercent() {
+        return bvhCanonicalPairs == 0
+                ? 0
+                : 100.0 * (bvhCanonicalPairs - bvhExactPairCandidates) / bvhCanonicalPairs;
     }
 
     /** Sum of the non-overlapping coarse CADQ scheduler phases measured during advance. */
