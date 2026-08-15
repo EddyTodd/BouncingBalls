@@ -22,6 +22,7 @@ Examples:
 --algorithm ALL_PAIRS_CCD --resolver DIRECT --workload SYMMETRIC_IMPACT --duration 2
 --algorithm SWEEP_AND_PRUNE_CCD --workload SPARSE_UNIFORM --balls 300
 --algorithm SWEPT_BVH_CCD --workload CLUSTERED --balls 300
+--algorithm SWEPT_UNIFORM_GRID_CCD --workload DENSE_UNIFORM --balls 1000
 --algorithm GLOBAL_EVENT_QUEUE --workload ACCELERATED --restitution .8 --balls 100
 --algorithm COMPUTE_AHEAD_DEPENDENCY_QUEUE --workload DIFFERENTIAL_ACCELERATION --balls 100
 --algorithm DISCRETE_BASELINE --step .01 --workload HIGH_VELOCITY --balls 100
@@ -35,12 +36,13 @@ Engine timing separates workload generation, scheduler construction, and `advanc
 |---|---|---|
 | `DISCRETE_BASELINE` | fixed-step overlap control | intentionally tunnels; non-CCD baseline |
 | `ALL_PAIRS_CCD` | complete pair/wall rebuild after every trajectory change | simple correctness reference, quadratic pair enumeration |
-| `SWEEP_AND_PRUNE_CCD` | conservative swept-interval broad phase + rebuild | very cheap candidate construction; repeated rebuild cost after events |
-| `SWEPT_BVH_CCD` | conservative swept-AABB hierarchy + rebuild | same exact candidates as SAP in the tested design, but extra hierarchy build/traversal cost |
+| `SWEEP_AND_PRUNE_CCD` | conservative swept-interval broad phase + rebuild | very cheap candidate construction; strong clustered behavior |
+| `SWEPT_BVH_CCD` | conservative swept-AABB hierarchy + rebuild | same exact candidates as SAP; extra hierarchy build/traversal cost |
+| `SWEPT_UNIFORM_GRID_CCD` | density-derived grid over conservative swept AABBs + rebuild | scales well in ordinary populations; duplicate bucket work under clustering |
 | `GLOBAL_EVENT_QUEUE` | generation-validated global heap | incremental prediction with stale entries and queue growth |
 | `COMPUTE_AHEAD_DEPENDENCY_QUEUE` | retained canonical owner events + reverse dependencies | expensive setup, highly optimized incremental invalidation |
 
-The repository intentionally keeps multiple architectures, including valid approaches that lose measured comparisons. Current evidence shows real workload and simulation-horizon crossovers between SAP and CADQ, while the tested rebuild-on-change swept BVH does not beat SAP through 1000 bodies. There is no universal scheduler winner claim.
+The repository intentionally keeps multiple architectures, including valid approaches that lose measured comparisons. Current evidence shows real workload, simulation-horizon, and scale crossovers: SAP/CADQ depends on workload and duration, rebuilt BVH does not beat SAP through 1000 bodies, and the density grid crosses SAP between the 300- and 1000-body tested populations while remaining worse on clustered/adversarial geometry. There is no universal scheduler winner claim.
 
 ## Simultaneous-contact resolvers
 
@@ -67,7 +69,7 @@ Pair TOI is genuinely quartic only when **relative acceleration is nonzero**. Eq
 
 ## Differential correctness campaign
 
-`CampaignCli` regenerates identical deterministic initial states across its continuous validation set and uses `ALL_PAIRS_CCD` as the physical reference. The general campaign predates the newer standalone broad phases; SAP and BVH are covered by permanent all-pairs differential regressions plus dedicated research campaigns. Generalizing reusable campaign selection remains benchmark-harness work, not a correctness gap.
+`CampaignCli` regenerates identical deterministic initial states across its continuous validation set and uses `ALL_PAIRS_CCD` as the physical reference. The general campaign predates the newer standalone broad phases; SAP, BVH, and the uniform grid are covered by permanent all-pairs differential regressions plus dedicated research campaigns. Generalizing reusable campaign selection remains benchmark-harness work, not a correctness gap.
 
 ```bash
 mvn exec:java \
@@ -89,6 +91,7 @@ Raw JSONL and hosted CI logs are research evidence, not universal benchmark resu
 - CADQ reselection, local refresh, dependency, and temporal-pruning work;
 - SAP canonical pairs, X sweep overlap work, exact pair candidates, rebuilds, and fallbacks;
 - swept-BVH canonical pairs, nodes built/depth, node visits, exact pair candidates, rebuilds, and fallbacks;
+- uniform-grid memberships, occupied cells, bucket pair attempts, duplicate pairs, unique cell pairs, AABB rejects, exact candidates, max bucket occupancy, rebuilds, and fallbacks;
 - deterministic physical contact history.
 
 Mechanism counters explain why timing changed; uninstrumented timing remains the performance acceptance gate. `maxQueueSize` is a structural proxy, not an allocation/heap measurement.
@@ -115,7 +118,7 @@ Important rejected or falsified ideas include:
 - retained-target candidate ordering;
 - analytical lower-bound top-k candidate probes.
 
-The failed swept grid is not evidence that spatial broad phases are generally ineffective. It showed that an extra spatial filter was redundant with cheaper CADQ temporal proofs. That distinction directly motivated standalone spatial schedulers.
+The failed CADQ grid is not evidence that standalone spatial grids are ineffective. It showed that an extra spatial filter was redundant with cheaper CADQ temporal proofs. The standalone uniform-grid scheduler later demonstrates a scale crossover against SAP when the grid *replaces* pair enumeration rather than redundantly filtering CADQ.
 
 Detailed CADQ records are under `docs/CADQ_*.md`.
 
@@ -144,27 +147,38 @@ That gate failed. Adaptive scheduling is therefore paused rather than implemente
 
 ## Swept-BVH result
 
-`SWEPT_BVH_CCD` shares SAP's exact conservative horizon and swept-AABB implementation, then replaces sweep enumeration with a rebuilt binary hierarchy. This makes SAP/BVH comparisons unusually controlled: paired runs require equal exact candidate counts, equal pair-TOI counts, equal physical-contact history, and equivalent final state.
+`SWEPT_BVH_CCD` shares SAP's exact conservative horizon and swept-AABB implementation, then replaces sweep enumeration with a rebuilt binary hierarchy. Paired runs require equal exact candidate counts, equal pair-TOI counts, equal physical-contact history, and equivalent final state.
 
-A naive allocated/sorted BVH was about **2.076x** slower than SAP over the combined 100/300-body population. After replacing it with reusable flat node arrays and mostly linear midpoint partitioning, the disadvantage fell to **1.222x**, demonstrating that implementation quality materially affected the result.
+A naive allocated/sorted BVH was about **2.076x** slower than SAP over the combined 100/300-body population. After replacing it with reusable flat node arrays and mostly linear midpoint partitioning, the disadvantage fell to **1.222x**.
 
-The optimized BVH still did not overtake SAP: at 1000 bodies it was **1.244x** slower overall and won **0/21** tested scenarios. The closest workload families were accelerated (~1.079x), adversarial (~1.126x), and clustered (~1.128x).
+The optimized BVH still did not overtake SAP: at 1000 bodies it was **1.244x** slower overall and won **0/21** tested scenarios. The BVH remains as a correct architectural comparator and preserved negative result. This does not falsify persistent/dynamic trees or higher-dimensional BVHs. See [`docs/SWEPT_BVH_RESEARCH.md`](docs/SWEPT_BVH_RESEARCH.md).
 
-The BVH remains as a correct architectural comparator and preserved negative result. This does not falsify persistent/dynamic trees or higher-dimensional BVHs. See [`docs/SWEPT_BVH_RESEARCH.md`](docs/SWEPT_BVH_RESEARCH.md).
+## Swept uniform-grid result
+
+`SWEPT_UNIFORM_GRID_CCD` consumes the same `SweptAabb` boxes as SAP/BVH and uses a parameter-free density rule:
+
+`cellSize = sqrt(worldArea / bodyCount)`.
+
+Packed primitive memberships, a reusable primitive pair set, and final exact AABB rejection avoid object-heavy bucket structures while explicitly measuring duplicate discovery work.
+
+At 100/300 bodies the density grid was **1.057x** SAP overall but **0.887x** BVH. It moved from 1.128x SAP at 100 bodies to 0.991x at 300. A proposed envelope-mean cell refinement was rejected because it worsened the combined grid/SAP factor to **1.308x** by exploding membership/sort work.
+
+At 1000 bodies, two independent hosted runs reproduced a scale crossover:
+
+- grid/SAP **0.961x** and **0.944x**, each with 15/21 grid wins;
+- grid/BVH **0.776x** and **0.768x**, each with 17/21 grid wins.
+
+The workload split is stable: the grid wins every seed in sparse, dense, high-velocity, wall-dominated, and accelerated workloads, while SAP wins every clustered/adversarial seed. Clustered seed 1 can exceed 19 million bucket-pair attempts and 11 million duplicate attempts, explaining the grid's failure mode despite identical exact candidate sets.
+
+This is evidence of a scale/workload crossover, not a universal grid victory. See [`docs/SWEPT_UNIFORM_GRID_RESEARCH.md`](docs/SWEPT_UNIFORM_GRID_RESEARCH.md).
 
 ## Current research direction
 
-The next collision-detection milestone should continue expanding the **standalone architecture collection**, not force an adaptive selector that failed its generalization gate.
+The next collision-detection milestone is a **persistent/dynamic AABB tree**. The rebuilt BVH experiment answered only the cost of reconstructing a hierarchy after every trajectory-changing batch. A dynamic tree should preserve topology and refit/reinsert only changed leaves, directly testing whether incremental spatial structure can recover hierarchy advantages without paying full rebuild cost.
 
-The next clean experiment is a standalone swept spatial hash / uniform-grid scheduler that consumes the same `SweptAabb` envelopes as SAP and BVH. This isolates candidate-enumeration structure again:
+The experiment should preserve the same conservative swept-AABB semantics where possible and measure tree insertions/reinsertions/refits/rotations, changed-leaf fraction, node visits, exact candidates, pair TOIs, construction versus advance cost, and allocation behavior. It should include the same sparse/dense/clustered/high-motion/adversarial workload set and scale through at least 1000 bodies when correctness permits.
 
-- sweep-and-prune;
-- rebuilt BVH;
-- spatial hashing / grid bucketing.
-
-The earlier CADQ grid falsification does not answer this question because that grid was layered redundantly in front of already-effective CADQ temporal pruning rather than replacing all-pairs enumeration as its own scheduler.
-
-After that, high-value independent tracks include a persistent/dynamic AABB tree, calendar/bucket event queues when queue work is measured as dominant, explicit allocation/GC profiling, stronger cross-machine replication, and simultaneous-contact resolver research.
+Later high-value tracks include calendar/bucket event queues when queue work is measured as dominant, explicit allocation/GC profiling, stronger cross-machine replication, and simultaneous-contact resolver research.
 
 For the full evidence history and current roadmap, see [`docs/COLLISION_ALGORITHM_RESEARCH.md`](docs/COLLISION_ALGORITHM_RESEARCH.md).
 
