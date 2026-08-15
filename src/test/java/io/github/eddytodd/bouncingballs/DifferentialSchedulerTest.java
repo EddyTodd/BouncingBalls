@@ -17,6 +17,7 @@ class DifferentialSchedulerTest {
         List<SchedulerKind> candidates = List.of(
                 SchedulerKind.SWEEP_AND_PRUNE_CCD,
                 SchedulerKind.SWEPT_BVH_CCD,
+                SchedulerKind.SWEPT_UNIFORM_GRID_CCD,
                 SchedulerKind.GLOBAL_EVENT_QUEUE,
                 SchedulerKind.COMPUTE_AHEAD_DEPENDENCY_QUEUE);
 

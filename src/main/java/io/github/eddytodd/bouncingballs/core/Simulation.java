@@ -23,6 +23,7 @@ public final class Simulation {
             case ALL_PAIRS_CCD -> new AllPairsCcdScheduler();
             case SWEEP_AND_PRUNE_CCD -> new SweepAndPruneCcdScheduler();
             case SWEPT_BVH_CCD -> new SweptBvhCcdScheduler();
+            case SWEPT_UNIFORM_GRID_CCD -> new SweptUniformGridCcdScheduler();
             case GLOBAL_EVENT_QUEUE -> new GlobalEventQueueScheduler();
             case COMPUTE_AHEAD_DEPENDENCY_QUEUE -> new ComputeAheadDependencyQueue();
             case DISCRETE_BASELINE -> null;

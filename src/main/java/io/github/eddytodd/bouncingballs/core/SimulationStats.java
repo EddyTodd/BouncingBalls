@@ -42,6 +42,15 @@ public final class SimulationStats {
     public long bvhRebuilds, bvhCanonicalPairs, bvhNodeVisits, bvhExactPairCandidates,
             bvhNodesBuilt, bvhMaxDepth, bvhAllPairsFallbackRebuilds;
 
+    /**
+     * Swept uniform-grid mechanism counts. Bucket-pair attempts include repeated pairs from multiple cells;
+     * duplicate attempts are removed by a primitive pair set. Unique cell pairs are then checked against the exact
+     * shared swept AABBs before they count as exact pair candidates.
+     */
+    public long gridRebuilds, gridCanonicalPairs, gridCellMemberships, gridOccupiedCells,
+            gridBucketPairAttempts, gridDuplicatePairAttempts, gridUniqueCellPairs, gridAabbRejects,
+            gridExactPairCandidates, gridAllPairsFallbackRebuilds, gridMaxBucketOccupancy;
+
     /** Number of non-empty deduplicated physical-contact batches presented to the resolver. */
     public long physicalContactBatches;
 
@@ -73,6 +82,12 @@ public final class SimulationStats {
         return bvhCanonicalPairs == 0
                 ? 0
                 : 100.0 * (bvhCanonicalPairs - bvhExactPairCandidates) / bvhCanonicalPairs;
+    }
+
+    public double gridPairPrunePercent() {
+        return gridCanonicalPairs == 0
+                ? 0
+                : 100.0 * (gridCanonicalPairs - gridExactPairCandidates) / gridCanonicalPairs;
     }
 
     /** Sum of the non-overlapping coarse CADQ scheduler phases measured during advance. */
