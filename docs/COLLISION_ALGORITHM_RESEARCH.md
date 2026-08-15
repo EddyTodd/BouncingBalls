@@ -30,9 +30,19 @@ SAP is architecturally important because it trades extremely cheap construction 
 
 ### `SWEPT_BVH_CCD`
 
-Uses the **same** conservative horizon and swept trajectory boxes as SAP, but enumerates overlaps with a rebuilt binary AABB hierarchy. The accepted implementation uses reusable flat node arrays, widest-centroid-axis splits, linear midpoint partitioning, and a deterministic median fallback for badly imbalanced partitions.
+Uses the same conservative horizon and swept trajectory boxes as SAP, but enumerates overlaps with a rebuilt binary AABB hierarchy. The accepted implementation uses reusable flat node arrays, widest-centroid-axis splits, linear midpoint partitioning, and a deterministic median fallback for badly imbalanced partitions.
 
-Because SAP and BVH share `SweptAabb`, their exact candidate sets are required to match in paired research runs. The BVH is currently a valid but slower architectural comparator through the tested 1000-body scale. See [`SWEPT_BVH_RESEARCH.md`](SWEPT_BVH_RESEARCH.md).
+Because SAP and BVH share `SweptAabb`, their exact candidate sets are required to match in paired research runs. The BVH is a valid but slower architectural comparator through the tested 1000-body scale. See [`SWEPT_BVH_RESEARCH.md`](SWEPT_BVH_RESEARCH.md).
+
+### `SWEPT_UNIFORM_GRID_CCD`
+
+Uses the same conservative `SweptAabb` boxes as SAP/BVH, but enumerates overlap candidates through a density-derived uniform grid. The accepted rule is parameter-free:
+
+`cellSize = sqrt(worldArea / bodyCount)`.
+
+Swept-box cell memberships are packed into primitive longs and sorted by cell id. A reusable primitive pair set removes pairs discovered through multiple cells, and the original swept AABBs are checked before exact TOI. This makes exact candidate semantics directly comparable with SAP/BVH while exposing membership, bucket, duplicate, and AABB-rejection work separately.
+
+The grid crosses SAP in the tested scale range but remains worse in heavily clustered/adversarial geometry. See [`SWEPT_UNIFORM_GRID_RESEARCH.md`](SWEPT_UNIFORM_GRID_RESEARCH.md).
 
 ### `GLOBAL_EVENT_QUEUE`
 
@@ -57,7 +67,7 @@ For deterministic seeded scenarios, `ALL_PAIRS_CCD` supplies the reference. Cand
 
 A tighter state comparison remains visible separately so floating-point path dependence is not silently relabeled as correctness. Constructed simultaneous-contact cases additionally exercise Newton's cradle and symmetric multi-contact behavior.
 
-Architecture-specific campaigns may impose stronger invariants. SAP/BVH comparisons additionally require equal exact swept candidate counts and equal exact pair-TOI counts because they intentionally share the same trajectory envelopes.
+Architecture-specific campaigns may impose stronger invariants. SAP/BVH/grid comparisons additionally require equal exact swept candidate counts and equal exact pair-TOI counts because all three intentionally share the same trajectory envelopes.
 
 ## Exact-work accounting
 
@@ -69,7 +79,8 @@ Architecture-specific campaigns may impose stronger invariants. SAP/BVH comparis
 - queue and invalidation mechanisms;
 - CADQ temporal checks/prunes and owner-refresh work;
 - SAP canonical pairs, sweep overlap work, exact candidates, rebuilds, and fallback rebuilds;
-- swept-BVH canonical pairs, nodes built/depth, node visits, exact candidates, rebuilds, and fallback rebuilds.
+- swept-BVH canonical pairs, nodes built/depth, node visits, exact candidates, rebuilds, and fallback rebuilds;
+- uniform-grid cell memberships, occupied cells, bucket pair attempts, duplicate pair attempts, unique cell pairs, AABB rejects, exact candidates, maximum bucket occupancy, rebuilds, and fallback rebuilds.
 
 Mechanism counters explain *why* timing moved. They do not substitute for uninstrumented timing. Likewise, queue size is a structural proxy and not a heap-allocation measurement.
 
@@ -84,8 +95,8 @@ CADQ has been developed through falsifiable milestones rather than accumulated a
 5. **Advance profiling:** located most measured scheduler work in full reselection and local refresh. Buffer reuse, the original local-owner bound, and deferred event materialization did not pass the timing gate and were reverted.
 6. **Radial temporal pruning:** conservatively skipped exact pair TOI when contact could not beat/tie the current exact owner horizon. Same-JVM evidence established a causal advance improvement.
 7. **Construction temporal pruning:** extended the accepted proof to initial selection. Construction benefit increased strongly through the tested 1000-body scale.
-8. **Swept uniform grid as an extra CADQ filter:** physically safe and geometrically aggressive, but redundant with temporal pruning; exact TOI work did not improve and total time regressed sharply. The grid was removed.
-9. **Axis-separable temporal proof:** extracted useful geometry from the failed grid as two cheap one-dimensional reachability inequalities. It removed substantial additional quadratic and genuine-quartic exact work and produced replicated timing gains.
+8. **Swept uniform grid as an extra CADQ filter:** physically safe and geometrically aggressive, but redundant with temporal pruning; exact TOI work did not improve and total time regressed sharply. The filter was removed.
+9. **Axis-separable temporal proof:** extracted useful geometry from the failed CADQ grid as two cheap one-dimensional reachability inequalities. It removed substantial additional quadratic and genuine-quartic exact work and produced replicated timing gains.
 10. **Retained-target candidate ordering:** falsified. Historical partner identity did not tighten the horizon enough to remove meaningful exact work.
 11. **Analytical lower-bound probe ordering:** falsified. The tested top-k probes added lower-bound work while tightening the horizon zero times in the mechanism population.
 12. **Canonical local traversal retest:** an optimization correctly rejected in milestone 5 became useful after temporal pruning changed the cost structure. It now removes roughly 38–45% of local-owner visits and replicated a small 300-body total-engine improvement.
@@ -104,7 +115,7 @@ Detailed records:
 
 ## Sweep-and-prune result
 
-SAP first established that a conservative spatial broad phase can be highly effective when it *replaces* rebuild-all-pairs enumeration rather than being layered redundantly in front of CADQ.
+SAP first established that a conservative spatial broad phase can be highly effective when it replaces rebuild-all-pairs enumeration rather than being layered redundantly in front of CADQ.
 
 At 100/300 bodies, the first same-JVM campaign reduced exact SAP candidates to about 0.85%/1.06% of canonical pairs and produced total factors of about 0.092/0.033 relative to `ALL_PAIRS_CCD` in that population.
 
@@ -133,7 +144,7 @@ The production adaptive scheduler was therefore **not implemented**. A crossover
 
 ## Swept-BVH result
 
-The standalone BVH experiment asks a narrower question than the failed CADQ grid: if SAP and BVH receive the **same conservative swept rectangles**, is hierarchy traversal a better way to enumerate their intersections?
+The standalone BVH experiment asks whether hierarchy traversal is a better way to enumerate the same conservative swept rectangles as SAP.
 
 The first naive BVH used allocated nodes and recursively copied/sorted sublists. Under a paired 100/300-body protocol it was 2.075648x slower than SAP overall and won 0/42 scenarios. This result was treated as implementation-confounded rather than architectural evidence.
 
@@ -143,14 +154,48 @@ After replacing that rebuild with reusable flat arrays and mostly linear midpoin
 - 300 bodies: 1.275374x, 0/21 wins;
 - combined: **1.221693x**, 2/42 wins.
 
-A separate 1000-body scaling appendix then tested whether hierarchy eventually overcame its higher constant cost. It did not:
-
-- all workloads combined: **1.243665x BVH/SAP**, 0/21 wins;
-- closest workload families: accelerated 1.079238x, adversarial 1.125584x, clustered 1.127527x.
-
-Every paired run preserved equal exact candidate counts, equal pair-TOI counts, equal physical history, and equivalent final state. The measured disadvantage is therefore candidate-enumeration overhead rather than different collision work.
+A separate 1000-body scaling appendix still favored SAP: **1.243665x BVH/SAP**, 0/21 wins. Every paired run preserved equal exact candidate counts, equal pair-TOI counts, equal physical history, and equivalent final state.
 
 The rebuild-on-change swept BVH remains in the collection as a correct, instrumented negative result. The experiment does not falsify persistent/dynamic AABB trees or higher-dimensional BVHs. See [`SWEPT_BVH_RESEARCH.md`](SWEPT_BVH_RESEARCH.md).
+
+## Swept uniform-grid result
+
+The standalone grid experiment asks whether bucket enumeration over the same conservative swept AABBs can outperform both SAP's sorted sweep and the rebuilt BVH.
+
+The accepted scheduler uses density-derived square cells with no benchmark-tuned multiplier. Primitive packed memberships avoid object bucket structures; a reusable primitive pair set measures and removes duplicate cell discoveries before exact AABB overlap and pair TOI.
+
+Permanent correctness CI passed 37/37 tests before performance claims. Research campaigns additionally required SAP/BVH/grid equality for exact candidate counts, pair TOI counts, physical histories, and final state.
+
+### 100/300-body result
+
+Under the same seven-workload, seed-1..3, 0.25-second population:
+
+- 100 bodies: 1.128387x grid/SAP and 0.966154x grid/BVH;
+- 300 bodies: 0.990776x grid/SAP and 0.814109x grid/BVH;
+- combined: **1.057345x grid/SAP** and **0.886879x grid/BVH**.
+
+The grid was therefore already materially better than rebuilt BVH and approximately tied SAP at 300 bodies, but not yet better than SAP over the combined small/medium population.
+
+Clustered/adversarial geometry exposed the main failure mechanism: large bucket occupancy and repeated multi-cell pair discovery. At 300-body clustered seed 3, the grid accumulated 336,761 bucket-pair attempts and 188,221 duplicates before reaching the same 87,046 exact swept-AABB candidates as SAP/BVH.
+
+### Rejected sizing refinement
+
+A parameter-free anisotropic rule that used the smaller of the density scale and mean swept-envelope extent on each axis was tested to reduce clustered bucket occupancy. It failed: the combined grid/SAP factor worsened from 1.057345 to **1.307722** because fine cells caused high-velocity/wall-dominated bodies to touch far more cells, moving cost into membership creation and sorting. The refinement was reverted.
+
+This falsifies the idea that reducing bucket occupancy is sufficient; membership volume and sorting cost are first-class grid mechanisms.
+
+### 1000-body crossover
+
+A separate one-warmup/five-measurement scaling appendix was executed twice independently on hosted GitHub runners. Both runs reproduced the same qualitative result:
+
+- replication A: **0.961221x grid/SAP**, 15/21 grid wins; **0.776201x grid/BVH**, 17/21 grid wins;
+- replication B: **0.943580x grid/SAP**, 15/21 grid wins; **0.767621x grid/BVH**, 17/21 grid wins.
+
+The workload split was identical in both runs. Grid won all three seeds for sparse, dense, high-velocity, wall-dominated, and accelerated workloads. SAP won all three clustered and adversarial seeds.
+
+At clustered seed 1, grid work reached about 2.03 million memberships, 19.1 million bucket pair attempts, and 11.4 million duplicate attempts. That mechanism explains why the scale crossover is not a universal grid victory.
+
+The density grid therefore provides the repository's first clear **standalone broad-phase scale crossover**: slower than SAP at 100 bodies, near parity at 300, faster overall at 1000, with stable geometry-dependent exceptions. See [`SWEPT_UNIFORM_GRID_RESEARCH.md`](SWEPT_UNIFORM_GRID_RESEARCH.md).
 
 ## Resolver track
 
@@ -166,31 +211,36 @@ Future resolver work should independently study Newton's cradle transfer, larger
 
 ## Current roadmap
 
-Two tempting shortcuts are now closed by evidence:
+Several tempting shortcuts are closed by evidence:
 
 1. more horizon-ordering heuristics for CADQ are not currently justified after retained-target and lower-bound probes failed their mechanism gates;
-2. a production adaptive SAP/CADQ scheduler is not justified after the first cheap pre-run selector failed held high-speed generalization.
+2. a production adaptive SAP/CADQ scheduler is not justified after the first cheap pre-run selector failed held high-speed generalization;
+3. a rebuilt spatial hierarchy is not competitive with SAP/grid in the tested range;
+4. grid cell sizing should not be tuned from one mechanism such as bucket occupancy without accounting for membership/sort cost.
 
-The current collection objective therefore returns to **materially different standalone broad-phase architectures**.
+The next architecture should therefore test something genuinely different from another rebuild policy.
 
-### Next scheduler experiment: standalone swept spatial hash / uniform grid
+### Next scheduler experiment: persistent/dynamic AABB tree
 
-Build a scheduler that consumes the same conservative `SweptAabb` boxes used by SAP and BVH, but enumerates overlap candidates through grid/hash buckets. The experiment should preserve the same exact-candidate and physical-history invariants where the box semantics are identical.
+PR #18 tested a hierarchy rebuilt after every trajectory-changing event batch. A dynamic AABB tree should preserve structure and update/refit/reinsert only leaves affected by changed trajectories. This directly tests whether incremental spatial maintenance can recover hierarchy query behavior without paying full rebuild cost.
 
-This is not a repeat of the rejected CADQ spatial filter. That earlier grid was layered in front of CADQ's already-effective temporal pruning and added redundant work. A standalone grid replaces rebuild-all-pairs enumeration and therefore tests a different architectural hypothesis.
+The clean experiment should measure:
 
-Compare at minimum:
-
-- SAP versus spatial hash at 100/300 bodies;
-- scaling through at least 1000 bodies if the small/medium result does not settle the question;
+- initial construction cost;
+- changed-leaf fraction per event batch;
+- leaf refits and reinsertions;
+- rotations/rebalancing work;
+- node visits per overlap query;
+- exact candidate and pair-TOI counts;
+- advance versus construction timing;
+- allocation/memory behavior;
 - sparse, dense, clustered, high-velocity, wall-dominated, accelerated, and adversarial regimes;
-- bucket occupancy, duplicate candidate generation, deduplication cost, exact candidate counts, and total engine timing.
+- scaling through at least 1000 bodies when correctness permits.
 
-Do not accept a grid tuning constant from one named workload. Cell-size strategy should be either mathematically derived from the current swept boxes or tested across a predeclared parameter set.
+Where possible it should preserve the same conservative `SweptAabb` semantics so differences remain attributable to data-structure maintenance rather than collision mathematics.
 
 ### Later independent tracks
 
-- persistent/dynamic AABB tree rather than rebuilding the BVH after every event batch;
 - calendar/bucket event queues when queue behavior becomes a measured bottleneck;
 - explicit allocation/GC profiling;
 - stronger 1000+ and cross-machine replication;
@@ -200,7 +250,7 @@ Adaptive scheduling can be revisited only after new generic features, early-run 
 
 ## Limitations
 
-Worst-case asymptotics remain important. SAP can degrade to quadratic active overlap; rebuilt BVH traversal can still approach quadratic overlap plus tree construction; CADQ invalidation can approach a rebuild; global heaps can accumulate stale events. The current hosted-runner results describe measured populations, not universal machine-independent speedups.
+Worst-case asymptotics remain important. SAP can degrade to quadratic active overlap; rebuilt BVH traversal can approach quadratic overlap plus tree construction; a uniform grid can explode in memberships and duplicate bucket pairs under large or clustered envelopes; CADQ invalidation can approach a rebuild; global heaps can accumulate stale events. The current hosted-runner results describe measured populations, not universal machine-independent speedups.
 
 No claim is currently made for million-body scalability, GPU acceleration, 3D/polygons/friction, a calendar queue, successful adaptive scheduling, or universal optimality.
 
