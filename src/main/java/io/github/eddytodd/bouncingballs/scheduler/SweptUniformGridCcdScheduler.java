@@ -7,14 +7,11 @@ import java.util.*;
  * Rebuild-on-change CCD scheduler using a parameter-free uniform grid over conservative swept AABBs.
  *
  * <p>The trajectory envelope is exactly the same {@link SweptAabb} proof used by sweep-and-prune and the swept BVH.
- * Grid resolution has no workload-tuned constant: each axis is capped by both the global density scale
- * {@code sqrt(worldArea / bodyCount)} and the mean swept-envelope extent on that axis. This prevents a locally dense
- * cluster of small envelopes from inheriting cells sized for empty world area, while large swept envelopes naturally
- * keep coarser cells. Every swept box is inserted into every grid cell it touches.</p>
- *
- * <p>Cell memberships are stored as primitive packed longs and sorted by cell id; unordered body pairs encountered
- * in multiple cells are deduplicated by a reusable primitive long set. A shared-cell pair reaches exact TOI only
- * after the original swept boxes overlap on both axes, so finite-horizon exact candidate semantics match SAP/BVH.</p>
+ * Grid cell area is derived as world area / body count, so the scheduler does not contain a workload-tuned cell-size
+ * constant. Every swept box is inserted into every grid cell it touches. Cell memberships are stored as primitive
+ * packed longs and sorted by cell id; unordered body pairs encountered in multiple cells are deduplicated by a
+ * reusable primitive long set. A shared-cell pair reaches exact TOI only after the original swept boxes overlap on
+ * both axes, so finite-horizon exact candidate semantics should match SAP/BVH.</p>
  *
  * <p>If no finite conservative horizon exists, grid dimensions are not representable, or the membership array would
  * exceed Java array indexing, the scheduler fails open to canonical all-pairs CCD for that rebuild.</p>
@@ -71,30 +68,11 @@ public final class SweptUniformGridCcdScheduler implements EventScheduler {
         double area = width * height;
         if (!(width > 0.0) || !(height > 0.0) || !Double.isFinite(area) || !(area > 0.0)) return false;
 
-        ensureBoxCapacity(bodyCount);
-        double summedWidth = 0.0;
-        double summedHeight = 0.0;
-        for (int i = 0; i < bodyCount; i++) {
-            SweptAabb.Box box = SweptAabb.forBall(balls.get(i), horizon, policy);
-            if (!box.finite()) return false;
-            boxes[i] = box;
-            summedWidth += box.maxX() - box.minX();
-            summedHeight += box.maxY() - box.minY();
-        }
-        if (!Double.isFinite(summedWidth) || !Double.isFinite(summedHeight)) return false;
+        double cellSize = Math.sqrt(area / bodyCount);
+        if (!(cellSize > 0.0) || !Double.isFinite(cellSize)) return false;
 
-        double densityScale = Math.sqrt(area / bodyCount);
-        double meanWidth = summedWidth / bodyCount;
-        double meanHeight = summedHeight / bodyCount;
-        double cellWidth = Math.min(densityScale, meanWidth);
-        double cellHeight = Math.min(densityScale, meanHeight);
-        if (!(cellWidth > 0.0) || !(cellHeight > 0.0)
-                || !Double.isFinite(cellWidth) || !Double.isFinite(cellHeight)) {
-            return false;
-        }
-
-        double cellsXDouble = Math.ceil(width / cellWidth);
-        double cellsYDouble = Math.ceil(height / cellHeight);
+        double cellsXDouble = Math.ceil(width / cellSize);
+        double cellsYDouble = Math.ceil(height / cellSize);
         if (!(cellsXDouble >= 1.0) || !(cellsYDouble >= 1.0)
                 || cellsXDouble > Integer.MAX_VALUE || cellsYDouble > Integer.MAX_VALUE) {
             return false;
@@ -104,9 +82,14 @@ public final class SweptUniformGridCcdScheduler implements EventScheduler {
         long totalCells = (long) cellsX * cellsY;
         if (totalCells <= 0 || totalCells > MAX_PACKED_CELL_ID) return false;
 
+        ensureBoxCapacity(bodyCount);
         long membershipCount = 0;
         for (int i = 0; i < bodyCount; i++) {
-            CellRange range = range(boxes[i], bounds, cellWidth, cellHeight, cellsX, cellsY);
+            SweptAabb.Box box = SweptAabb.forBall(balls.get(i), horizon, policy);
+            if (!box.finite()) return false;
+            boxes[i] = box;
+
+            CellRange range = range(box, bounds, cellSize, cellsX, cellsY);
             long bodyMemberships = (long) (range.maxX - range.minX + 1)
                     * (range.maxY - range.minY + 1);
             membershipCount += bodyMemberships;
@@ -117,7 +100,7 @@ public final class SweptUniformGridCcdScheduler implements EventScheduler {
         ensureMembershipCapacity(membershipSize);
         int write = 0;
         for (int bodyIndex = 0; bodyIndex < bodyCount; bodyIndex++) {
-            CellRange range = range(boxes[bodyIndex], bounds, cellWidth, cellHeight, cellsX, cellsY);
+            CellRange range = range(boxes[bodyIndex], bounds, cellSize, cellsX, cellsY);
             for (int y = range.minY; y <= range.maxY; y++) {
                 long row = (long) y * cellsX;
                 for (int x = range.minX; x <= range.maxX; x++) {
@@ -180,14 +163,13 @@ public final class SweptUniformGridCcdScheduler implements EventScheduler {
     private static CellRange range(
             SweptAabb.Box box,
             Bounds bounds,
-            double cellWidth,
-            double cellHeight,
+            double cellSize,
             int cellsX,
             int cellsY) {
-        int minX = clampCell((box.minX() - bounds.minX()) / cellWidth, cellsX);
-        int maxX = clampCell((box.maxX() - bounds.minX()) / cellWidth, cellsX);
-        int minY = clampCell((box.minY() - bounds.minY()) / cellHeight, cellsY);
-        int maxY = clampCell((box.maxY() - bounds.minY()) / cellHeight, cellsY);
+        int minX = clampCell((box.minX() - bounds.minX()) / cellSize, cellsX);
+        int maxX = clampCell((box.maxX() - bounds.minX()) / cellSize, cellsX);
+        int minY = clampCell((box.minY() - bounds.minY()) / cellSize, cellsY);
+        int maxY = clampCell((box.maxY() - bounds.minY()) / cellSize, cellsY);
         return new CellRange(
                 Math.min(minX, maxX),
                 Math.max(minX, maxX),
