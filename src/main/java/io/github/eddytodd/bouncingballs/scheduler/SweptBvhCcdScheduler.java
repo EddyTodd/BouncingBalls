@@ -8,15 +8,32 @@ import java.util.*;
  *
  * <p>This scheduler shares the same exact wall horizon and trajectory-envelope proof as
  * {@link SweepAndPruneCcdScheduler}. The only intended architectural difference is candidate enumeration: swept
- * boxes are arranged into a median-split BVH, and each leaf queries the hierarchy for overlapping leaves with a
- * larger stable body id. Exact TOI prediction remains the authority for every surviving pair.</p>
+ * boxes are arranged into a spatial BVH, and each leaf queries the hierarchy for overlapping leaves with a larger
+ * stable body id. Exact TOI prediction remains the authority for every surviving pair.</p>
  *
- * <p>If the conservative horizon is unavailable, or any swept box cannot be represented by finite bounds, the
- * scheduler falls back to canonical all-pairs CCD for that rebuild. The hierarchy is rebuilt after every
- * trajectory-changing event batch.</p>
+ * <p>The hierarchy uses reusable flat node arrays rather than allocating node objects on every event batch. Rebuilds
+ * partition leaves around the midpoint of the widest centroid axis in linear time; severely imbalanced partitions
+ * fall back to a deterministic median sort for bounded depth. If the conservative horizon is unavailable, or any
+ * swept box cannot be represented by finite bounds, the scheduler falls back to canonical all-pairs CCD.</p>
  */
 public final class SweptBvhCcdScheduler implements EventScheduler {
+    private static final Comparator<SweptAabb.Box> X_ORDER = Comparator
+            .comparingDouble(SweptAabb.Box::centroidX)
+            .thenComparingInt(box -> box.ball().id);
+    private static final Comparator<SweptAabb.Box> Y_ORDER = Comparator
+            .comparingDouble(SweptAabb.Box::centroidY)
+            .thenComparingInt(box -> box.ball().id);
+
     private final PriorityQueue<CollisionEvent> queue = new PriorityQueue<>();
+    private SweptAabb.Box[] leaves = new SweptAabb.Box[0];
+    private double[] nodeMinX = new double[0];
+    private double[] nodeMaxX = new double[0];
+    private double[] nodeMinY = new double[0];
+    private double[] nodeMaxY = new double[0];
+    private int[] nodeLeft = new int[0];
+    private int[] nodeRight = new int[0];
+    private int[] nodeLeaf = new int[0];
+    private int nextNode;
     private double now;
 
     @Override
@@ -57,30 +74,52 @@ public final class SweptBvhCcdScheduler implements EventScheduler {
             double horizon,
             NumericalPolicy policy,
             SimulationStats stats) {
-        List<SweptAabb.Box> boxes = new ArrayList<>(balls.size());
-        for (Ball ball : balls) {
-            SweptAabb.Box box = SweptAabb.forBall(ball, horizon, policy);
+        ensureCapacity(balls.size());
+        for (int i = 0; i < balls.size(); i++) {
+            SweptAabb.Box box = SweptAabb.forBall(balls.get(i), horizon, policy);
             if (!box.finite()) return false;
-            boxes.add(box);
+            leaves[i] = box;
         }
 
-        Node root = build(boxes, 0, stats);
-        for (SweptAabb.Box query : boxes) {
-            collect(query, root, policy, stats);
-        }
+        nextNode = 0;
+        int root = build(0, balls.size(), 0, stats);
+        for (int i = 0; i < balls.size(); i++) collect(leaves[i], root, policy, stats);
         return true;
     }
 
-    private Node build(List<SweptAabb.Box> boxes, int depth, SimulationStats stats) {
+    private void ensureCapacity(int bodies) {
+        if (leaves.length < bodies) leaves = new SweptAabb.Box[bodies];
+        int nodes = Math.max(1, 2 * bodies - 1);
+        if (nodeMinX.length >= nodes) return;
+        nodeMinX = new double[nodes];
+        nodeMaxX = new double[nodes];
+        nodeMinY = new double[nodes];
+        nodeMaxY = new double[nodes];
+        nodeLeft = new int[nodes];
+        nodeRight = new int[nodes];
+        nodeLeaf = new int[nodes];
+    }
+
+    private int build(int from, int to, int depth, SimulationStats stats) {
+        int node = nextNode++;
         stats.bvhNodesBuilt++;
         stats.bvhMaxDepth = Math.max(stats.bvhMaxDepth, depth);
-        if (boxes.size() == 1) return new Node(boxes.get(0), null, null, boxes.get(0));
+
+        if (to - from == 1) {
+            SweptAabb.Box box = leaves[from];
+            setBounds(node, box.minX(), box.maxX(), box.minY(), box.maxY());
+            nodeLeft[node] = -1;
+            nodeRight[node] = -1;
+            nodeLeaf[node] = from;
+            return node;
+        }
 
         double minCx = Double.POSITIVE_INFINITY;
         double maxCx = Double.NEGATIVE_INFINITY;
         double minCy = Double.POSITIVE_INFINITY;
         double maxCy = Double.NEGATIVE_INFINITY;
-        for (SweptAabb.Box box : boxes) {
+        for (int i = from; i < to; i++) {
+            SweptAabb.Box box = leaves[i];
             minCx = Math.min(minCx, box.centroidX());
             maxCx = Math.max(maxCx, box.centroidX());
             minCy = Math.min(minCy, box.centroidY());
@@ -88,35 +127,81 @@ public final class SweptBvhCcdScheduler implements EventScheduler {
         }
 
         boolean splitX = maxCx - minCx >= maxCy - minCy;
-        boxes.sort(splitX
-                ? Comparator.comparingDouble(SweptAabb.Box::centroidX)
-                        .thenComparingInt(box -> box.ball().id)
-                : Comparator.comparingDouble(SweptAabb.Box::centroidY)
-                        .thenComparingInt(box -> box.ball().id));
+        double split = splitX ? 0.5 * (minCx + maxCx) : 0.5 * (minCy + maxCy);
+        int middle = partition(from, to, splitX, split);
+        int size = to - from;
+        int minimumSide = Math.max(1, size / 8);
+        if (middle - from < minimumSide || to - middle < minimumSide) {
+            Arrays.sort(leaves, from, to, splitX ? X_ORDER : Y_ORDER);
+            middle = from + size / 2;
+        }
 
-        int middle = boxes.size() / 2;
-        Node left = build(new ArrayList<>(boxes.subList(0, middle)), depth + 1, stats);
-        Node right = build(new ArrayList<>(boxes.subList(middle, boxes.size())), depth + 1, stats);
-        return new Node(SweptAabb.Box.union(left.bounds, right.bounds), left, right, null);
+        int left = build(from, middle, depth + 1, stats);
+        int right = build(middle, to, depth + 1, stats);
+        nodeLeft[node] = left;
+        nodeRight[node] = right;
+        nodeLeaf[node] = -1;
+        setBounds(
+                node,
+                Math.min(nodeMinX[left], nodeMinX[right]),
+                Math.max(nodeMaxX[left], nodeMaxX[right]),
+                Math.min(nodeMinY[left], nodeMinY[right]),
+                Math.max(nodeMaxY[left], nodeMaxY[right]));
+        return node;
+    }
+
+    private int partition(int from, int to, boolean xAxis, double split) {
+        int left = from;
+        int right = to - 1;
+        while (left <= right) {
+            while (left <= right && coordinate(leaves[left], xAxis) < split) left++;
+            while (left <= right && coordinate(leaves[right], xAxis) >= split) right--;
+            if (left < right) {
+                SweptAabb.Box temporary = leaves[left];
+                leaves[left] = leaves[right];
+                leaves[right] = temporary;
+                left++;
+                right--;
+            }
+        }
+        return left;
+    }
+
+    private static double coordinate(SweptAabb.Box box, boolean xAxis) {
+        return xAxis ? box.centroidX() : box.centroidY();
+    }
+
+    private void setBounds(int node, double minX, double maxX, double minY, double maxY) {
+        nodeMinX[node] = minX;
+        nodeMaxX[node] = maxX;
+        nodeMinY[node] = minY;
+        nodeMaxY[node] = maxY;
     }
 
     private void collect(
             SweptAabb.Box query,
-            Node node,
+            int node,
             NumericalPolicy policy,
             SimulationStats stats) {
         stats.bvhNodeVisits++;
-        if (!query.overlaps(node.bounds)) return;
-
-        if (node.leaf != null) {
-            if (node.leaf.ball().id <= query.ball().id) return;
-            stats.bvhExactPairCandidates++;
-            EventPredictions.addPair(query.ball(), node.leaf.ball(), policy, stats, queue, now);
+        if (query.maxX() < nodeMinX[node]
+                || nodeMaxX[node] < query.minX()
+                || query.maxY() < nodeMinY[node]
+                || nodeMaxY[node] < query.minY()) {
             return;
         }
 
-        collect(query, node.left, policy, stats);
-        collect(query, node.right, policy, stats);
+        int leafIndex = nodeLeaf[node];
+        if (leafIndex >= 0) {
+            SweptAabb.Box other = leaves[leafIndex];
+            if (other.ball().id <= query.ball().id) return;
+            stats.bvhExactPairCandidates++;
+            EventPredictions.addPair(query.ball(), other.ball(), policy, stats, queue, now);
+            return;
+        }
+
+        collect(query, nodeLeft[node], policy, stats);
+        collect(query, nodeRight[node], policy, stats);
     }
 
     private void addAllPairs(List<Ball> balls, NumericalPolicy policy, SimulationStats stats) {
@@ -154,19 +239,5 @@ public final class SweptBvhCcdScheduler implements EventScheduler {
     @Override
     public void timeAdvanced(double dt) {
         now += dt;
-    }
-
-    private static final class Node {
-        final SweptAabb.Box bounds;
-        final Node left;
-        final Node right;
-        final SweptAabb.Box leaf;
-
-        Node(SweptAabb.Box bounds, Node left, Node right, SweptAabb.Box leaf) {
-            this.bounds = bounds;
-            this.left = left;
-            this.right = right;
-            this.leaf = leaf;
-        }
     }
 }
