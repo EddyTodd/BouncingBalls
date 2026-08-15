@@ -2,7 +2,7 @@
 
 ## Objective
 
-This repository is a controlled research laboratory for exact continuous collision detection and simultaneous-contact resolution for frictionless 2D circular rigid bodies. The goal is not to crown one algorithm from one benchmark. The goal is to maintain materially different implementations, state their invariants, test them against independent correctness oracles, measure where each wins, preserve falsified hypotheses, and eventually make scheduler selection itself evidence-driven.
+This repository is a controlled research laboratory for exact continuous collision detection and simultaneous-contact resolution for frictionless 2D circular rigid bodies. The goal is not to crown one algorithm from one benchmark. The goal is to maintain materially different implementations, state their invariants, test them against independent correctness oracles, measure where each wins, preserve falsified hypotheses, and make future scheduler-selection decisions evidence-driven.
 
 The 2022 Swing implementation remains under `legacy/`; the research engine is rendering-independent.
 
@@ -26,7 +26,13 @@ Rebuilds every wall and unordered pair prediction after every trajectory-changin
 
 Rebuilds after every trajectory-changing batch, but replaces all-pairs candidate enumeration with conservative swept intervals over the earliest exact wall horizon. Radius-expanded X intervals are swept, Y-disjoint survivors are rejected, and only two-axis overlaps reach exact pair TOI. Ambiguous or unbounded cases fail open.
 
-SAP is architecturally important because it trades extremely cheap construction for repeated rebuild work. See [`SAP_CROSSOVER.md`](SAP_CROSSOVER.md).
+SAP is architecturally important because it trades extremely cheap construction for repeated rebuild work. See [`SAP_CROSSOVER.md`](SAP_CROSSOVER.md) and [`SAP_CADQ_DURATION_CROSSOVER.md`](SAP_CADQ_DURATION_CROSSOVER.md).
+
+### `SWEPT_BVH_CCD`
+
+Uses the **same** conservative horizon and swept trajectory boxes as SAP, but enumerates overlaps with a rebuilt binary AABB hierarchy. The accepted implementation uses reusable flat node arrays, widest-centroid-axis splits, linear midpoint partitioning, and a deterministic median fallback for badly imbalanced partitions.
+
+Because SAP and BVH share `SweptAabb`, their exact candidate sets are required to match in paired research runs. The BVH is currently a valid but slower architectural comparator through the tested 1000-body scale. See [`SWEPT_BVH_RESEARCH.md`](SWEPT_BVH_RESEARCH.md).
 
 ### `GLOBAL_EVENT_QUEUE`
 
@@ -51,6 +57,8 @@ For deterministic seeded scenarios, `ALL_PAIRS_CCD` supplies the reference. Cand
 
 A tighter state comparison remains visible separately so floating-point path dependence is not silently relabeled as correctness. Constructed simultaneous-contact cases additionally exercise Newton's cradle and symmetric multi-contact behavior.
 
+Architecture-specific campaigns may impose stronger invariants. SAP/BVH comparisons additionally require equal exact swept candidate counts and equal exact pair-TOI counts because they intentionally share the same trajectory envelopes.
+
 ## Exact-work accounting
 
 `SimulationStats` separates:
@@ -60,7 +68,8 @@ A tighter state comparison remains visible separately so floating-point path dep
 - predicted-event materializations;
 - queue and invalidation mechanisms;
 - CADQ temporal checks/prunes and owner-refresh work;
-- SAP canonical pairs, sweep overlap work, exact candidates, rebuilds, and fallback rebuilds.
+- SAP canonical pairs, sweep overlap work, exact candidates, rebuilds, and fallback rebuilds;
+- swept-BVH canonical pairs, nodes built/depth, node visits, exact candidates, rebuilds, and fallback rebuilds.
 
 Mechanism counters explain *why* timing moved. They do not substitute for uninstrumented timing. Likewise, queue size is a structural proxy and not a heap-allocation measurement.
 
@@ -108,7 +117,40 @@ The more important cross-architecture experiment then timed SAP directly against
 
 At 300 bodies, replicated SAP/CADQ workload factors range from strong SAP wins on sparse/dense/differential-acceleration scenarios to strong CADQ wins on clustered/adversarial scenarios, with wall-dominated motion near parity.
 
+Duration sweeps confirmed that the winner changes with horizon, but event-batch count alone and initial SAP candidate fraction alone both failed as universal selectors.
+
 This is direct evidence that the repository should not reduce to one scheduler implementation. Different architectures occupy different regions of the workload/horizon space.
+
+## Parametric selector result
+
+The observed SAP/CADQ crossover motivated an explicit test of whether a cheap pre-run model could select the faster scheduler. Instead of training on named workload labels, the repository introduced a deterministic six-dimensional Halton workload manifold spanning fill, clustering, speed, wall bias, shared acceleration, and differential acceleration.
+
+The first manifold was rejected because it under-sampled CADQ-favorable high-speed regimes and entangled density with wall horizon. The redesigned fixed-domain manifold expanded speed through 300 and varied fill through radius.
+
+On the redesigned 360-scenario population, SAP won 317 scenarios and CADQ 43. A generic physics-feature ridge model slightly improved aggregate regret over always-SAP, but held-design-point validation exposed severe extrapolation failure in an unseen high-speed stratum: the worst fold had about 59.7% accuracy, 1.287x geometric regret, 3.08x p95 regret, and 4.60x maximum regret.
+
+The production adaptive scheduler was therefore **not implemented**. A crossover is not sufficient evidence for adaptation if the winner cannot be predicted robustly from cheap pre-run features. See [`PARAMETRIC_SELECTOR_RESEARCH.md`](PARAMETRIC_SELECTOR_RESEARCH.md).
+
+## Swept-BVH result
+
+The standalone BVH experiment asks a narrower question than the failed CADQ grid: if SAP and BVH receive the **same conservative swept rectangles**, is hierarchy traversal a better way to enumerate their intersections?
+
+The first naive BVH used allocated nodes and recursively copied/sorted sublists. Under a paired 100/300-body protocol it was 2.075648x slower than SAP overall and won 0/42 scenarios. This result was treated as implementation-confounded rather than architectural evidence.
+
+After replacing that rebuild with reusable flat arrays and mostly linear midpoint partitioning, the identical campaign improved to:
+
+- 100 bodies: 1.170270x BVH/SAP, 2/21 BVH wins;
+- 300 bodies: 1.275374x, 0/21 wins;
+- combined: **1.221693x**, 2/42 wins.
+
+A separate 1000-body scaling appendix then tested whether hierarchy eventually overcame its higher constant cost. It did not:
+
+- all workloads combined: **1.243665x BVH/SAP**, 0/21 wins;
+- closest workload families: accelerated 1.079238x, adversarial 1.125584x, clustered 1.127527x.
+
+Every paired run preserved equal exact candidate counts, equal pair-TOI counts, equal physical history, and equivalent final state. The measured disadvantage is therefore candidate-enumeration overhead rather than different collision work.
+
+The rebuild-on-change swept BVH remains in the collection as a correct, instrumented negative result. The experiment does not falsify persistent/dynamic AABB trees or higher-dimensional BVHs. See [`SWEPT_BVH_RESEARCH.md`](SWEPT_BVH_RESEARCH.md).
 
 ## Resolver track
 
@@ -124,36 +166,43 @@ Future resolver work should independently study Newton's cradle transfer, larger
 
 ## Current roadmap
 
-The previous horizon-ordering direction is closed for now: both retained-target and analytical lower-bound probes failed their mechanism gates.
+Two tempting shortcuts are now closed by evidence:
 
-The next scheduler question is the **SAP/CADQ crossover surface**, not another isolated micro-optimization.
+1. more horizon-ordering heuristics for CADQ are not currently justified after retained-target and lower-bound probes failed their mechanism gates;
+2. a production adaptive SAP/CADQ scheduler is not justified after the first cheap pre-run selector failed held high-speed generalization.
 
-Before implementing an adaptive scheduler, measure how the winner changes with:
+The current collection objective therefore returns to **materially different standalone broad-phase architectures**.
 
-1. simulated duration / expected event count;
-2. body count;
-3. density and clustering;
-4. velocity scale;
-5. shared versus differential acceleration;
-6. wall-dominated versus pair-dominated motion.
+### Next scheduler experiment: standalone swept spatial hash / uniform grid
 
-The campaign should reverse or block comparator-family order, preserve all-pairs physical-oracle validation, and collect cheap pre-run/workload features. The hypothesis is useful only if those features can predict the faster scheduler without first paying both schedulers' costs.
+Build a scheduler that consumes the same conservative `SweptAabb` boxes used by SAP and BVH, but enumerates overlap candidates through grid/hash buckets. The experiment should preserve the same exact-candidate and physical-history invariants where the box semantics are identical.
 
-If a stable decision boundary exists, implement an adaptive scheduler and compare it against both fixed schedulers and an offline oracle that selects the faster measured architecture per scenario. If the boundary is not predictable cheaply, preserve that negative result rather than adding speculative adaptation.
+This is not a repeat of the rejected CADQ spatial filter. That earlier grid was layered in front of CADQ's already-effective temporal pruning and added redundant work. A standalone grid replaces rebuild-all-pairs enumeration and therefore tests a different architectural hypothesis.
 
-Independent tracks remain:
+Compare at minimum:
 
-- standalone broad-phase architectures such as spatial hashing and BVH/AABB trees rather than redundant CADQ filters;
-- calendar/bucket event queues when queue behavior is a measured bottleneck;
+- SAP versus spatial hash at 100/300 bodies;
+- scaling through at least 1000 bodies if the small/medium result does not settle the question;
+- sparse, dense, clustered, high-velocity, wall-dominated, accelerated, and adversarial regimes;
+- bucket occupancy, duplicate candidate generation, deduplication cost, exact candidate counts, and total engine timing.
+
+Do not accept a grid tuning constant from one named workload. Cell-size strategy should be either mathematically derived from the current swept boxes or tested across a predeclared parameter set.
+
+### Later independent tracks
+
+- persistent/dynamic AABB tree rather than rebuilding the BVH after every event batch;
+- calendar/bucket event queues when queue behavior becomes a measured bottleneck;
 - explicit allocation/GC profiling;
 - stronger 1000+ and cross-machine replication;
 - simultaneous-contact resolver research.
 
+Adaptive scheduling can be revisited only after new generic features, early-run evidence, or additional architectures make the decision problem materially better posed.
+
 ## Limitations
 
-Worst-case asymptotics remain important. SAP can degrade to quadratic active overlap; CADQ invalidation can approach a rebuild; global heaps can accumulate stale events. The current hosted-runner results describe measured populations, not universal machine-independent speedups.
+Worst-case asymptotics remain important. SAP can degrade to quadratic active overlap; rebuilt BVH traversal can still approach quadratic overlap plus tree construction; CADQ invalidation can approach a rebuild; global heaps can accumulate stale events. The current hosted-runner results describe measured populations, not universal machine-independent speedups.
 
-No claim is currently made for million-body scalability, GPU acceleration, 3D/polygons/friction, a calendar queue, adaptive scheduling, or universal optimality.
+No claim is currently made for million-body scalability, GPU acceleration, 3D/polygons/friction, a calendar queue, successful adaptive scheduling, or universal optimality.
 
 ## Prior work
 
