@@ -9,7 +9,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Temporary hosted-runner research campaign; removed before merge. */
+/** Temporary hosted-runner scaling campaign; removed before merge. */
 class SweptBvhVsSapResearchTest {
     private static final List<Workloads.Kind> WORKLOADS = List.of(
             Workloads.Kind.SPARSE_UNIFORM,
@@ -19,78 +19,63 @@ class SweptBvhVsSapResearchTest {
             Workloads.Kind.WALL_DOMINATED,
             Workloads.Kind.ACCELERATED,
             Workloads.Kind.ADVERSARIAL_INVALIDATION);
-    private static final int WARMUPS = 2;
-    private static final int MEASURED = 7;
+    private static final int WARMUPS = 1;
+    private static final int MEASURED = 5;
     private static final double DURATION = 0.25;
     private static final double STATE_TOLERANCE_MULTIPLIER = 10_000;
 
     @Test
-    void compareSweptBvhAgainstSapWithIdenticalCandidateSemantics() {
-        Map<Integer, List<Double>> ratiosByCount = new LinkedHashMap<>();
+    void compareSweptBvhAgainstSapAtOneThousandBodies() {
+        List<Double> allRatios = new ArrayList<>();
         Map<Workloads.Kind, List<Double>> ratiosByWorkload = new LinkedHashMap<>();
-        int totalWins = 0;
-        int totalScenarios = 0;
 
-        for (int balls : List.of(100, 300)) {
-            ratiosByCount.put(balls, new ArrayList<>());
-            for (Workloads.Kind workload : WORKLOADS) {
-                ratiosByWorkload.computeIfAbsent(workload, ignored -> new ArrayList<>());
-                for (long seed = 1; seed <= 3; seed++) {
-                    List<Long> sapTimes = new ArrayList<>();
-                    List<Long> bvhTimes = new ArrayList<>();
+        int balls = 1000;
+        for (Workloads.Kind workload : WORKLOADS) {
+            List<Double> workloadRatios = ratiosByWorkload.computeIfAbsent(workload, ignored -> new ArrayList<>());
+            for (long seed = 1; seed <= 3; seed++) {
+                List<Long> sapTimes = new ArrayList<>();
+                List<Long> bvhTimes = new ArrayList<>();
 
-                    for (int repetition = -WARMUPS; repetition < MEASURED; repetition++) {
-                        boolean bvhFirst = (repetition & 1) == 0;
-                        Run first = run(workload, balls, seed,
-                                bvhFirst ? SchedulerKind.SWEPT_BVH_CCD : SchedulerKind.SWEEP_AND_PRUNE_CCD);
-                        Run second = run(workload, balls, seed,
-                                bvhFirst ? SchedulerKind.SWEEP_AND_PRUNE_CCD : SchedulerKind.SWEPT_BVH_CCD);
-                        Run bvh = bvhFirst ? first : second;
-                        Run sap = bvhFirst ? second : first;
+                for (int repetition = -WARMUPS; repetition < MEASURED; repetition++) {
+                    boolean bvhFirst = (repetition & 1) == 0;
+                    Run first = run(workload, balls, seed,
+                            bvhFirst ? SchedulerKind.SWEPT_BVH_CCD : SchedulerKind.SWEEP_AND_PRUNE_CCD);
+                    Run second = run(workload, balls, seed,
+                            bvhFirst ? SchedulerKind.SWEEP_AND_PRUNE_CCD : SchedulerKind.SWEPT_BVH_CCD);
+                    Run bvh = bvhFirst ? first : second;
+                    Run sap = bvhFirst ? second : first;
 
-                        assertEquivalent(workload, balls, seed, sap, bvh);
-                        assertEquals(sap.stats.sapExactPairCandidates, bvh.stats.bvhExactPairCandidates,
-                                workload + " balls=" + balls + " seed=" + seed + " exact candidates");
-                        assertEquals(sap.stats.pairToiQueries, bvh.stats.pairToiQueries,
-                                workload + " balls=" + balls + " seed=" + seed + " pair TOIs");
+                    assertEquivalent(workload, seed, sap, bvh);
+                    assertEquals(sap.stats.sapExactPairCandidates, bvh.stats.bvhExactPairCandidates,
+                            workload + " seed=" + seed + " exact candidates");
+                    assertEquals(sap.stats.pairToiQueries, bvh.stats.pairToiQueries,
+                            workload + " seed=" + seed + " pair TOIs");
 
-                        if (repetition >= 0) {
-                            sapTimes.add(sap.nanos);
-                            bvhTimes.add(bvh.nanos);
-                        }
+                    if (repetition >= 0) {
+                        sapTimes.add(sap.nanos);
+                        bvhTimes.add(bvh.nanos);
                     }
-
-                    long sapMedian = median(sapTimes);
-                    long bvhMedian = median(bvhTimes);
-                    double ratio = (double) bvhMedian / sapMedian;
-                    ratiosByCount.get(balls).add(ratio);
-                    ratiosByWorkload.get(workload).add(ratio);
-                    if (ratio < 1.0) totalWins++;
-                    totalScenarios++;
-                    System.out.printf(Locale.ROOT,
-                            "BVH_SAP_SCENARIO workload=%s balls=%d seed=%d factor=%.6f sapNs=%d bvhNs=%d%n",
-                            workload, balls, seed, ratio, sapMedian, bvhMedian);
                 }
+
+                long sapMedian = median(sapTimes);
+                long bvhMedian = median(bvhTimes);
+                double ratio = (double) bvhMedian / sapMedian;
+                workloadRatios.add(ratio);
+                allRatios.add(ratio);
+                System.out.printf(Locale.ROOT,
+                        "BVH_SAP_SCALE workload=%s balls=1000 seed=%d factor=%.6f sapNs=%d bvhNs=%d%n",
+                        workload, seed, ratio, sapMedian, bvhMedian);
             }
         }
 
-        for (Map.Entry<Integer, List<Double>> entry : ratiosByCount.entrySet()) {
-            List<Double> ratios = entry.getValue();
-            System.out.printf(Locale.ROOT,
-                    "BVH_SAP_COUNT balls=%d scenarios=%d geoFactor=%.6f wins=%d%n",
-                    entry.getKey(), ratios.size(), geometricMean(ratios), countWins(ratios));
-        }
         for (Map.Entry<Workloads.Kind, List<Double>> entry : ratiosByWorkload.entrySet()) {
-            List<Double> ratios = entry.getValue();
             System.out.printf(Locale.ROOT,
-                    "BVH_SAP_WORKLOAD workload=%s scenarios=%d geoFactor=%.6f wins=%d%n",
-                    entry.getKey(), ratios.size(), geometricMean(ratios), countWins(ratios));
+                    "BVH_SAP_SCALE_WORKLOAD workload=%s geoFactor=%.6f wins=%d%n",
+                    entry.getKey(), geometricMean(entry.getValue()), countWins(entry.getValue()));
         }
         System.out.printf(Locale.ROOT,
-                "BVH_SAP_TOTAL scenarios=%d geoFactor=%.6f wins=%d%n",
-                totalScenarios,
-                geometricMean(ratiosByCount.values().stream().flatMap(Collection::stream).toList()),
-                totalWins);
+                "BVH_SAP_SCALE_TOTAL balls=1000 scenarios=%d geoFactor=%.6f wins=%d%n",
+                allRatios.size(), geometricMean(allRatios), countWins(allRatios));
     }
 
     private static Run run(Workloads.Kind workload, int balls, long seed, SchedulerKind scheduler) {
@@ -105,18 +90,12 @@ class SweptBvhVsSapResearchTest {
         return new Run(elapsed, StateSnapshot.capture(simulation), simulation.stats());
     }
 
-    private static void assertEquivalent(
-            Workloads.Kind workload,
-            int balls,
-            long seed,
-            Run sap,
-            Run bvh) {
+    private static void assertEquivalent(Workloads.Kind workload, long seed, Run sap, Run bvh) {
         StateSnapshot.Difference difference = bvh.snapshot.compareTo(
                 sap.snapshot,
                 NumericalPolicy.DEFAULT,
                 STATE_TOLERANCE_MULTIPLIER);
-        assertTrue(difference.equivalent(),
-                workload + " balls=" + balls + " seed=" + seed + " reason=" + difference.reason());
+        assertTrue(difference.equivalent(), workload + " seed=" + seed + " reason=" + difference.reason());
         assertEquals(sap.stats.physicalContactBatches, bvh.stats.physicalContactBatches);
         assertEquals(sap.stats.physicalContactsObserved, bvh.stats.physicalContactsObserved);
         assertEquals(sap.stats.physicalContactHash, bvh.stats.physicalContactHash);
